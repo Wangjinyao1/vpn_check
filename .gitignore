@@ -1,0 +1,49 @@
+# ============ 敏感信息与手写需求（规范第 2、11 条） ============
+# 严禁提交：订阅令牌、Gemini Cookie、数据库账号、节点凭据
+.env
+.env.*
+!.env.example
+Project_Require.md
+
+# ============ 临时目录与文件（规范第 4 条） ============
+.temp/
+temp_*
+*.tmp
+*.bak
+*.log
+run_log.log
+
+# ============ 测试产物与报告（可能含节点与 IP） ============
+test_results.txt
+smoke_out.txt
+full_run_out.txt
+val_*.txt
+cron_exec.log
+
+# ============ Passwall 导出（含节点令牌与密码） ============
+export/
+
+# ============ 内核二进制（体积大，由 install_debian.sh 下载） ============
+bin/
+
+# ============ Python ============
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.venv/
+venv/
+env/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# ============ IDE / 系统 ============
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
