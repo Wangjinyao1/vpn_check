@@ -1,8 +1,41 @@
 # VPN Check & Passwall Optimizer
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/Platform-Debian%2013%20%7C%20Windows-lightgrey.svg)](./install_debian.sh)
+[![Version](https://img.shields.io/badge/Version-8.01-brightgreen.svg)](#changelog)
+[![GitHub stars](https://img.shields.io/github/stars/Wangjinyao1/vpn_check?style=social)](https://github.com/Wangjinyao1/vpn_check)
+
 > 面向中国大陆网络环境的机场节点质量评估工具：用真实代理内核逐节点建隧道，按 OpenWrt-Passwall 规则分级，验证 Google / Gemini / Grok 可达性与 Gemini 真实提问能力，并导出可直接落地的 Passwall 配置。
 
+**关键词**：`机场测速` `节点可用性` `Passwall` `Xray` `Sing-box` `Reality` `Hysteria2` `AnyTLS` `Gemini 地区封锁`
+
 ---
+
+## 📑 目录
+
+- [项目目的](#goals)
+- [核心特性](#features)
+- [检测原理](#principles)
+- [项目架构与目录结构](#architecture)
+- [快速开始](#quickstart)
+- [命令行参数](#cli)
+- [Debian 13 部署与定时任务](#deploy)
+- [配置参考（.env）](#config)
+- [数据表说明与聚合关系（MySQL）](#database)
+- [Passwall 导出产物](#export)
+- [单元测试与验证](#testing)
+- [上传 GitHub 前的保密性审查](#security)
+- [版本迭代](#changelog)
+- [常见问题](#faq)
+- [贡献指南](#contributing)
+- [免责声明](#disclaimer)
+- [开源参考与致谢](#thanks)
+- [License](#license)
+
+---
+
+<a id="goals"></a>
 
 ## 🎯 项目目的
 
@@ -14,7 +47,18 @@
 4. 配置登录凭据时，Gemini 能否**真实提问并收到回答**
 5. 最终生成可粘贴到 OpenWrt Passwall 的节点列表、Base64 订阅与 UCI 一键导入脚本
 
+**适用场景**
+
+- 自用机场订阅节点太多，想知道哪些真的能上网、哪些能稳定访问 AI 服务
+- 使用 OpenWrt + Passwall，需要可直接导入的节点 / 订阅 / UCI 脚本
+- 需要区分 Gemini 的「网页可访问」「地区封锁」「真实提问可用」三种状态
+- 希望把巡检结果沉淀到 MySQL，长期观察节点质量变化
+
+**不适用**：商业转售、批量压测、共享账号滥用，或任何违反服务条款的用途。
+
 ---
+
+<a id="features"></a>
 
 ## ✨ 核心特性
 
@@ -32,8 +76,13 @@
 - **Passwall 原生导出**：节点链接、Base64 订阅、Gemini 可用节点清单、UCI 导入脚本。
 - **可选持久化**：MySQL 记录节点、逐次测试结果与批次汇总，支持查重去重。
 - **纯 CLI / One-Shot**：适配 Cron / systemd timer，日志单文件 3MB 封顶。
+- **配置集中**：阈值、探针、超时全部集中在 `core/config.py`，敏感项仅从 `.env` 读取。
+- **失败可归类**：`TIMEOUT` / `TLS_ERROR` / `PROXY_CONNECT_FAIL` 等失败码，便于批量排查与统计。
+- **纯函数可测**：解析、判定与内核配置生成均有单元测试覆盖。
 
 ---
+
+<a id="principles"></a>
 
 ## 🔬 检测原理
 
@@ -62,9 +111,24 @@
 
 | 级别 | 含义 | 判定条件 |
 | --- | --- | --- |
-| 🟢 Level 0 | 代理通 | 国际探针（Google/Gstatic/Cloudflare）任一返回 200/204 |
+| 🟢 Level 0 | 代理通 | 国际探针（Google / Gstatic / Cloudflare / YouTube）任一返回 200/204 |
 | 🟡 Level 1 | 仅直连 | 国际探针全失败，但国内探针任一可达 |
 | 🔴 Level 2 | 无网络 | 国内外探针全部失败，或内核启动失败 |
+
+### 探针清单（对齐 Passwall）
+
+| 类型 | 探针 | 目标地址 |
+| --- | --- | --- |
+| 国际 | Google204 | `https://www.google.com/generate_204` |
+| 国际 | Gstatic204 | `https://www.gstatic.com/generate_204` |
+| 国际 | Cloudflare | `https://cp.cloudflare.com/` |
+| 国际 | YouTube204 | `https://www.youtube.com/generate_204` |
+| 国内 | MIUI_CN | `https://connect.rom.miui.com/generate_204` |
+| 国内 | HiCloud_CN | `https://connectivitycheck.platform.hicloud.com/generate_204` |
+| 国内 | VIVO_CN | `https://wifi.vivo.com.cn/generate_204` |
+| 国内 | Baidu | `https://www.baidu.com` |
+
+默认 `HEAD` 请求、`PROBE_TIMEOUT=6s`，仅 `200/204` 视为通过；可用 `PROBE_METHOD=GET` 切换方法。
 
 ### Gemini 判定顺序
 
@@ -73,7 +137,33 @@
 3. Gemini Web App：地区码属于 `CHN/RUS/IRN/PRK/...` → 直接封锁；命中中英文封锁文案 → 封锁；特性开关为 `false` → 封锁
 4. 以上通过且配置了 Cookie → 提交提问并解析流式回复，输出 `回答成功 / 提问受阻 / 未测`
 
+### Gemini 三态结果
+
+| 状态 | 判定依据 | 结果字段 |
+| --- | --- | --- |
+| 网页可访问 | Web App 返回正常页面，且未命中封锁特征 | `gemini_status=ok`、`gemini_ok=true` |
+| 地区封锁 | GeoIP 地区码命中黑名单、页面命中中英文封锁文案，或特性开关为 `false` | `region_blocked=true`，导出 Gemini 清单时排除 |
+| 真实提问可用 | 配置 Cookie 后 `StreamGenerate` 返回 200 且解析出回复 | `chat_ok=true`（`false` 为提问受阻，`null` 为未测） |
+
+### 失败码（`fail_code`）
+
+| 失败码 | 含义 |
+| --- | --- |
+| `DOMESTIC_ONLY` | 🟡 仅直连：国内探针可达、国际探针全失败 |
+| `TIMEOUT` | 探针超时 |
+| `CONN_REFUSED` | 目标拒绝连接 |
+| `CONN_RESET` | 连接被重置 / 管道中断 |
+| `TLS_ERROR` | TLS 握手或证书异常 |
+| `DNS_ERROR` | 域名解析失败 |
+| `PROXY_CONNECT_FAIL` | SOCKS5 隧道不通（内核未真正代理流量） |
+| `KERNEL_START` | 内核启动失败（含降级后仍失败） |
+| `NO_KERNEL` | 未找到可用内核二进制 |
+| `PIPELINE_ERROR` | 探测流程内部异常 |
+| `UNREACHABLE` | 其他不可达 |
+
 ---
+
+<a id="architecture"></a>
 
 ## 🏗️ 项目架构与目录结构
 
@@ -109,6 +199,19 @@ vpn_check/
 └── run_log.log                # 运行日志（禁止提交）
 ```
 
+### 运行阶段与模块
+
+| 阶段 | 模块 | 职责 |
+| --- | --- | --- |
+| 1. 拉取 | `core/subscription.py` | 并发拉取订阅、解析配额、跨订阅汇总 |
+| 2. 解析 | `core/parsers.py` + `core/models.py` | 分享链接 → `ProxyNode`，按连接指纹去重 |
+| 3. 建隧道 | `core/engine.py` | 生成 Xray / Sing-box 配置，启停 SOCKS5 隧道 |
+| 4. 探测 | `core/netprobe.py` + `core/checker.py` | 国际 / 国内探针、网页探测、并发调度 |
+| 5. 判定 | `core/gemini.py` + `core/ip_location.py` | Gemini 三态判定、落地 IP 与归属地 |
+| 6. 输出 | `core/report.py` / `core/exporter.py` / `core/database.py` | 终端看板、Passwall 导出、MySQL 入库 |
+
+<a id="kernel"></a>
+
 ### 内核选择策略
 
 | 协议 / 场景 | 首选内核 | 说明 |
@@ -122,52 +225,189 @@ vpn_check/
 
 ---
 
+<a id="quickstart"></a>
+
 ## 🚀 快速开始
 
 ### 1. 环境要求
 
-- Python 3.10+
-- `bin/xray` 与 `bin/sing-box`（Windows 为 `.exe`）
-- 依赖：`pip install -r requirements.txt`
+| 项目 | 要求 | 说明 |
+| --- | --- | --- |
+| Python | 3.10+ | 使用 `dataclasses` 与 `from __future__ import annotations` |
+| 操作系统 | Debian 13 / Ubuntu 22.04+ / Windows 10+ | Linux 推荐部署在 VPS 或软路由旁路主机 |
+| 代理内核 | `bin/xray` + `bin/sing-box` | Windows 为 `xray.exe` / `sing-box.exe` |
+| Python 依赖 | `PySocks` / `PyMySQL` / `curl_cffi` | `pip install -r requirements.txt` |
+| MySQL | 可选 | 未配置账号时自动跳过持久化 |
+| 网络 | 可访问 GitHub 与订阅地址 | 订阅直连失败时可配置本地代理 |
 
-### 2. 配置敏感参数
+### 2. 获取代码与安装依赖
+
+```bash
+git clone https://github.com/Wangjinyao1/vpn_check.git
+cd vpn_check
+
+# Linux / macOS
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
 ```powershell
+# Windows PowerShell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+> Debian 13 可直接使用一键安装脚本，自动完成依赖、内核、`.env` 与 systemd 定时器，见 [Debian 13 部署](#deploy)。
+
+### 3. 准备内核二进制
+
+程序不在运行期下载内核，请提前放入 `bin/`（避免巡检时依赖外网可用性）：
+
+```bash
+mkdir -p bin
+
+# Xray-core：按架构选择 Xray-linux-64.zip / Xray-linux-arm64-v8a.zip
+curl -fsSL -o /tmp/xray.zip https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip
+unzip -oq /tmp/xray.zip xray -d bin && chmod +x bin/xray
+
+# Sing-box：Linux amd64 示例（v1.13.16，可按 Releases 最新标签替换）
+curl -fsSL -o /tmp/sing-box.tar.gz https://github.com/SagerNet/sing-box/releases/download/v1.13.16/sing-box-1.13.16-linux-amd64.tar.gz
+tar -xzf /tmp/sing-box.tar.gz -C /tmp
+install -m 0755 /tmp/sing-box-1.13.16-linux-amd64/sing-box bin/sing-box
+```
+
+Windows 用户从官方 Releases 下载 `Xray-windows-64.zip` 与 `sing-box-windows-amd64.zip`，解压后将 `xray.exe`、`sing-box.exe` 放入 `bin\`。
+
+验证内核可用：
+
+```bash
+bin/xray version
+bin/sing-box version
+```
+
+同一台机器同时存在两个内核时，程序会按协议自动选择，详见 [内核选择策略](#kernel)。
+
+### 4. 配置 `.env`
+
+```powershell
+# Windows
 Copy-Item .env.example .env
 notepad .env
 ```
 
-最小配置只需订阅源：
+```bash
+# Linux / macOS
+cp .env.example .env
+nano .env
+```
+
+最小配置只需订阅源（支持 1~10 组，至少 1 组）：
 
 ```ini
 SUBSCRIBE_name_1=机场名称
 SUBSCRIBE_URL_1=https://example.com/api/v1/client/subscribe?token=your_token
 ```
 
-可选：`GEMINI_1PSID` / `GEMINI_1PSIDTS`（启用真实提问）、`DB_*`（启用持久化）。
+常用可选项：
 
-### 3. 本地运行
+| 变量 | 作用 |
+| --- | --- |
+| `GEMINI_1PSID` / `GEMINI_1PSIDTS` | 启用 Gemini 真实提问验证 |
+| `DB_*` | 启用 MySQL 持久化 |
+| `SUBSCRIPTION_PROXY` | 订阅直连失败时依次尝试的本地代理 |
+| `GEMINI_CHAT_QUESTION` / `GEMINI_CHAT_EXPECT` | 自定义提问内容与期望答案 |
+
+完整变量说明见 [配置参考](#config)。
+
+### 5. 运行
 
 ```powershell
-# 完整巡检
+# 完整巡检：拉取 → 隧道 → 探测 → Gemini → 报告 → 导出 → 入库
 python main.py
 
 # 调试：仅测 3 个节点，跳过提问与数据库
 python main.py --limit 3 --skip-gemini-chat --no-db
 
-# 静默模式（Cron 友好）
+# 只测 VLESS，20 并发，控制台只看可用节点
+python main.py --protocol vless --workers 20 --ok-only
+
+# 静默模式（Cron / systemd 友好）
 python main.py --quiet
+```
+
+运行结束后会得到：
+
+| 产物 | 默认路径 | 说明 |
+| --- | --- | --- |
+| 终端看板 | stdout | 总览、可用节点榜、订阅质量、失败原因 |
+| 报告归档 | `test_results.txt` | 与终端看板内容一致，可用 `--report-file` 改写 |
+| Passwall 导出 | `export/` | 节点链接、Base64 订阅、UCI 脚本 |
+| 运行日志 | `run_log.log` | 单文件 3MB 封顶，不产生备份文件 |
+
+终端输出示例（实际结果随订阅与网络环境变化）：
+
+```text
+==================================================================
+  🌐 VPN Node Evaluator & Passwall Optimizer v8.01
+  严格遵循 OpenWrt-Passwall、Gemini-Config-Checker 与项目开发规范
+==================================================================
+📡 [1/4] 拉取订阅（共 2 个订阅源）...
+  ✅ 机场A                获取  86 节点（  3.2s，节余流量: 128.4 GB）
+🚀 [2/4] 启动内核隧道探测（42 节点，10 并发）...
+  [12/42] 🟢 香港-Reality   23ms  Gemini ✅  Google ✅  Grok ✅
+📋 [3/4] 汇总测试报告 ...
+✨ 共 42 节点：🟢 代理通 31 / 🟡 仅直连 4 / 🔴 无网络 7；Gemini 可用 18，提问成功 9
 ```
 
 ---
 
-## 🖥️ Debian 13 一键安装
+<a id="cli"></a>
 
-仓库根目录提供 [`install_debian.sh`](./install_debian.sh)，自动完成系统依赖、Python 虚拟环境、Xray/Sing-box 内核下载、`.env` 初始化与 systemd 定时器安装。
+## 🧭 命令行参数
+
+```bash
+python main.py [options]
+```
+
+| 参数 | 默认值 | 说明 |
+| --- | --- | --- |
+| `--limit N` | `0`（不限） | 仅测试前 N 个节点，调试用 |
+| `--filter KW` | 空 | 按节点名称关键字过滤（区分大小写） |
+| `--protocol LIST` | 空 | 仅测试指定协议，逗号分隔，如 `vless,anytls` |
+| `--workers N` | `10` | 并发线程数；实际取值受 `MAX_WORKERS`（默认 32）与节点总数约束 |
+| `--skip-gemini` | 关闭 | 跳过 Gemini 深度检测（仍探测网页可达性） |
+| `--skip-gemini-chat` | 关闭 | Gemini 仅测地区封锁，不发起提问 |
+| `--no-db` | 关闭 | 不写 MySQL |
+| `--no-export` | 关闭 | 不导出 Passwall 配置 |
+| `--ok-only` | 关闭 | 控制台仅展示总览与可用节点榜 |
+| `--quiet`, `-q` | 关闭 | 静默模式，仅输出最终摘要 |
+| `--report-file PATH` | `test_results.txt` | 报告归档路径 |
+| `--export-dir PATH` | `export/` | Passwall 导出目录 |
+| `--version` | — | 显示版本号 |
+| `-h`, `--help` | — | 显示帮助 |
+
+> `main.py` 与兼容入口 `net_check.py` 等价，后者仅为保留旧调用方式。
+
+---
+
+<a id="deploy"></a>
+
+## 🖥️ Debian 13 部署与定时任务
+
+根目录的 [`install_debian.sh`](./install_debian.sh) 会自动完成：
+
+1. 安装 `python3` / `python3-venv` / `git` / `curl` / `unzip` 等系统依赖
+2. 创建 `.venv` 并安装 `requirements.txt`
+3. 下载 Xray-core 与 Sing-box 到 `bin/`
+4. 初始化 `.env`（若不存在）并将权限收紧为 `600`
+5. 安装 `vpn-check.service` 与 `vpn-check.timer`（默认每 2 小时巡检）
 
 ### 方式 A：已克隆仓库
 
 ```bash
+git clone https://github.com/Wangjinyao1/vpn_check.git /opt/vpn_check
 cd /opt/vpn_check
 sudo bash install_debian.sh
 ```
@@ -177,14 +417,14 @@ sudo bash install_debian.sh
 ### 方式 B：从 GitHub 一键安装
 
 ```bash
-sudo REPO_URL=https://github.com/<你的账号>/<你的仓库>.git bash install_debian.sh
+sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git bash install_debian.sh
 ```
 
 ### 方式 C：远程脚本直装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<你的账号>/<你的仓库>/main/install_debian.sh -o /tmp/install_debian.sh
-sudo REPO_URL=https://github.com/<你的账号>/<你的仓库>.git bash /tmp/install_debian.sh
+curl -fsSL https://raw.githubusercontent.com/Wangjinyao1/vpn_check/main/install_debian.sh -o /tmp/install_debian.sh
+sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git bash /tmp/install_debian.sh
 ```
 
 安装完成后：
@@ -193,6 +433,7 @@ sudo REPO_URL=https://github.com/<你的账号>/<你的仓库>.git bash /tmp/ins
 sudo nano /opt/vpn_check/.env          # 填入订阅与数据库配置
 sudo systemctl start vpn-check.service # 立即执行一次
 systemctl status vpn-check.timer       # 查看每 2 小时定时器
+journalctl -u vpn-check.service -f     # 查看 systemd 执行日志
 tail -f /opt/vpn_check/run_log.log     # 查看运行日志
 ```
 
@@ -200,37 +441,119 @@ tail -f /opt/vpn_check/run_log.log     # 查看运行日志
 >
 > 内核默认从官方 GitHub Releases 下载；如需固定版本可设置 `SINGBOX_VERSION=v1.13.16`。
 
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--project-dir PATH` | 指定项目目录（默认脚本所在目录或 `/opt/vpn_check`） |
+| `--repo URL` / `REPO_URL=...` | 目录不存在时克隆仓库 |
+| `--no-timer` | 只安装依赖与内核，不创建 systemd 定时器 |
+
 ### Cron 备选方案
 
 ```cron
 0 */2 * * * /opt/vpn_check/run_check.sh -q >> /opt/vpn_check/cron_exec.log 2>&1
 ```
 
----
+### Windows 计划任务
 
-## 🧭 CLI 参数
+```powershell
+# 每天 08:00 执行一次（路径按实际位置修改）
+schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
+  /TR "powershell -NoProfile -ExecutionPolicy Bypass -Command \"cd 'C:\path\to\vpn_check'; .\.venv\Scripts\python.exe main.py --quiet\""
+```
 
-| 参数 | 说明 |
-| --- | --- |
-| `--limit N` | 仅测试前 N 个节点 |
-| `--filter KW` | 按节点名称关键字过滤 |
-| `--protocol vless,anytls` | 仅测试指定协议 |
-| `--workers N` | 并发线程数（默认 10，上限 32） |
-| `--skip-gemini` | 跳过 Gemini 深度检测（仍做网页可达性） |
-| `--skip-gemini-chat` | Gemini 仅测地区，不发起提问 |
-| `--no-db` | 不写 MySQL |
-| `--no-export` | 不导出 Passwall 配置 |
-| `--ok-only` | 控制台仅显示总览与排行榜 |
-| `--quiet`, `-q` | 静默模式，仅输出最终摘要 |
-| `--report-file PATH` | 指定报告归档路径 |
-| `--export-dir PATH` | 指定导出目录 |
-| `--version` | 显示版本 |
+> 程序为 One-Shot CLI，无守护进程，适合 Cron / systemd timer / Windows 计划任务等任意调度方式。
 
 ---
+
+<a id="config"></a>
+
+## ⚙️ 配置参考（.env）
+
+所有可调参数集中在 [`core/config.py`](./core/config.py)，敏感项通过 `.env` 注入。读取优先级：**系统环境变量 > `.env` > 代码默认值**。
+
+### 订阅与拉取
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SUBSCRIBE_name_N` | `订阅源_N` | 第 N 个订阅的显示名称（N 取 1~10） |
+| `SUBSCRIBE_URL_N` | 空 | 第 N 个订阅地址；至少配置 1 组，否则启动时报配置致命错误 |
+| `SUBSCRIPTION_PROXY` | `http://127.0.0.1:7890,socks5h://127.0.0.1:10808,socks5h://127.0.0.1:20000` | 订阅直连失败时依次尝试的本地代理，逗号分隔；显式留空则只走直连 |
+| `SUBSCRIBE_TIMEOUT` | `15` | 单个订阅拉取超时（秒） |
+| `SUBSCRIBE_RETRY` | `1` | 单订阅重试次数 |
+| `SUBSCRIBE_WORKERS` | `5` | 订阅并发拉取数 |
+
+### 探针与超时
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PROBE_TIMEOUT` | `6` | 国际 / 国内连通性探针超时（秒） |
+| `PROBE_METHOD` | `HEAD` | 探针 HTTP 方法，可选 `HEAD` / `GET` |
+| `SITE_TIMEOUT` | `12` | Google / Gemini / Grok 网页探测超时（秒） |
+| `EGRESS_TIMEOUT` | `6` | 落地 IP 探测超时（秒） |
+
+### Gemini 深度检测
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `GEMINI_1PSID` | 空 | Gemini Cookie `__Secure-1PSID`，留空则跳过提问测试 |
+| `GEMINI_1PSIDTS` | 空 | 配套 Cookie `__Secure-1PSIDTS` |
+| `GEMINI_CHAT_QUESTION` | `请回答：1+1等于几？只回答一个阿拉伯数字。` | 提问内容 |
+| `GEMINI_CHAT_EXPECT` | `2` | 期望答案关键字，命中即视为提问成功 |
+| `GEMINI_CHAT_TIMEOUT` | `25` | 提问接口超时（秒） |
+
+> Cookie 获取方式：浏览器登录 `gemini.google.com` → DevTools → Application → Cookies → 复制 `__Secure-1PSID` 与 `__Secure-1PSIDTS`。
+
+### 内核与并发
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `XRAY_BIN` | 自动查找 `bin/xray[.exe]` | Xray-core 路径 |
+| `SINGBOX_BIN` | 自动查找 `bin/sing-box[.exe]` | Sing-box 路径 |
+| `KERNEL_START_TIMEOUT` | `8` | 内核启动等待（秒） |
+| `KERNEL_STOP_TIMEOUT` | `3` | 内核退出等待（秒） |
+| `ENABLE_CORE_FALLBACK` | `1` | 首选内核失败时自动切换备用内核 |
+| `DEFAULT_WORKERS` | `10` | 默认并发线程数 |
+| `MAX_WORKERS` | `32` | 并发上限（`--workers` 超出时自动收敛） |
+| `VPN_CHECK_TEMP_DIR` | `.temp` | 运行期临时目录（仅读取系统环境变量；文件以 `temp_` 开头） |
+
+### 数据库与归属地（可选）
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DB_ENABLED` | `1` | 设为 `0` 或使用 `--no-db` 可完全跳过持久化 |
+| `DB_HOST` | `127.0.0.1` | MySQL / MariaDB 地址 |
+| `DB_PORT` | `3306` | 端口 |
+| `DB_USER` | 空 | 账号；未配置时自动跳过持久化 |
+| `DB_PASSWORD` | 空 | 密码 |
+| `DB_DATABASE` | 空 | 库名（需提前创建） |
+| `DB_CHARSET` | `utf8mb4` | 字符集 |
+| `DB_CONNECT_TIMEOUT` | `3` | 连接超时（秒） |
+| `IP_LOCATION_TABLE` | `ip_address_location` | 跨项目共享的 IP 归属地字典表名 |
+| `IP_LOCATION_HELPER` | 空 | 外部查询脚本路径（如 `check_ip_add_only.py`）；留空时自动探测项目上层的 `API/check_ip_add` 目录 |
+| `IP_LOCATION_TIMEOUT` | `6` | 归属地查询超时（秒） |
+| `IPINFO_TOKEN` | 空 | ipinfo.io Token（可选，提高配额） |
+| `IPINFO_URL` | `https://ipinfo.io/{ip}/json` | 回源查询地址模板 |
+
+### 安装脚本专用
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SINGBOX_VERSION` | 最新版本，失败回退 `v1.13.16` | `install_debian.sh` 下载的 Sing-box 版本 |
+| `REPO_URL` | 空 | 一键安装时用于克隆仓库的地址 |
+
+> `.env` 已被 `.gitignore` 忽略，仓库只保留脱敏模板 [`.env.example`](./.env.example)。
+
+---
+
+<a id="database"></a>
 
 ## 🗄️ 数据表说明与聚合关系（MySQL）
 
 所有业务表使用项目前缀 `vpn_check_`，主键自增，均含 `created_at` / `updated_at`。
+
+> 首次运行会自动建表，只需提前创建数据库并授予账号读写权限。DDL 与去重索引见 [`core/database.py`](./core/database.py)。
 
 ### `vpn_check_node`：节点元数据
 
@@ -298,6 +621,8 @@ ORDER BY r.latency_ms ASC;
 
 ---
 
+<a id="export"></a>
+
 ## 📦 Passwall 导出产物
 
 每次运行后写入 `export/`：
@@ -312,9 +637,61 @@ ORDER BY r.latency_ms ASC;
 
 UCI 字段严格对齐 Passwall `subscribe.lua`：`type`、`protocol`、`transport`、`ws_host/ws_path`、`grpc_serviceName`、`tls_serverName`、`utls/fingerprint`、`reality_*`、`hysteria2_*` 等。
 
+### 导入 Passwall
+
+1. **节点列表导入**：Passwall → 节点列表 → 导入，粘贴 `passwall_nodes_ok.txt` 内容（每行一条分享链接）。
+2. **自定义订阅**：把 `passwall_nodes_ok_b64.txt` 放到任意静态文件服务，将 URL 填入 Passwall → 订阅。
+3. **UCI 批量导入**：脚本仅新增节点、不删除已有配置，末尾自动 `uci commit passwall` 并重启服务。
+
+```bash
+scp export/passwall_uci_ok.txt root@192.168.1.1:/tmp/
+ssh root@192.168.1.1 "sh /tmp/passwall_uci_ok.txt"
+```
+
 > `export/` 内含节点凭据，已加入 `.gitignore`，**禁止提交**。
 
 ---
+
+<a id="testing"></a>
+
+## 🧪 单元测试与验证
+
+### 运行单元测试
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+[`tests/test_core.py`](./tests/test_core.py) 的覆盖范围：
+
+| 覆盖点 | 说明 |
+| --- | --- |
+| 链接解析 | VLESS Reality / VLESS WS / VMess JSON / Hysteria2 / AnyTLS / Shadowsocks（含 SIP003 插件） |
+| 跨订阅去重 | 连接指纹 SHA256 去重 |
+| 内核配置 | Xray / Sing-box JSON 结构与字段映射 |
+| Passwall 导出 | UCI 字段映射与单引号转义 |
+| Gemini 判据 | 特性开关、地区码、封锁文案、回复解析 |
+| 订阅配额 | `Subscription-Userinfo` 解析 |
+| 内核自检 | `xray run -test` / `sing-box check`（二进制存在时执行） |
+
+### 冒烟运行
+
+```bash
+# 仅测 2 个节点，跳过 Gemini 提问、数据库与导出
+python main.py --limit 2 --skip-gemini-chat --no-db --no-export
+```
+
+### 提交前检查
+
+```bash
+python -m unittest discover -s tests -v
+python main.py --limit 2 --skip-gemini-chat --no-db --no-export
+git status --short        # 确认无敏感文件进入暂存区
+```
+
+---
+
+<a id="security"></a>
 
 ## 🔐 上传 GitHub 前的保密性审查
 
@@ -352,16 +729,21 @@ git check-ignore -v .env Project_Require.md export/passwall_uci_ok.txt run_log.l
 
 ---
 
+<a id="changelog"></a>
+
 ## 📈 版本迭代
 
-> 说明：项目早期版本已在代码中标记为 `7.00`，为保持版本连续性，本次按规范“大版本 +1”直接升级到 `8.00`；此后按规范继续递增（小改 +0.01，中改 +0.1，大改 +1）。
+> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `8.01`。
 
 | 版本 | 日期 | 类型 | 变更摘要 |
 | --- | --- | --- | --- |
+| 8.01 | 2026-10-29 | 小改 (+0.01) | 完善 README：新增徽章与目录、完整 `.env` 配置参考、探针清单、Gemini 三态结果、失败码说明、Passwall 导入步骤、单元测试与贡献指南，并将安装命令替换为仓库真实地址 |
 | 8.00 | 2026-10-28 | 大版本 (+1) | 全量模块化重构：拆分 models/parsers/subscription/netprobe/report/logging；修复 VMess `net` 传输映射、WS Host 字段、Xray 26 `allowInsecure` 移除、Sing-box AnyTLS/Hysteria2 配置、记录表去重与字段溢出；新增浏览器指纹网页探测、内核降级、Passwall Gemini 清单、Debian 13 一键安装、保密性审查清单、单元测试 |
 | 7.00 | 2026-10-16 | 基线 | 重构前的单文件核心版本 |
 
 ---
+
+<a id="faq"></a>
 
 ## ❓ 常见问题
 
@@ -380,7 +762,48 @@ A：可以。`--no-db` 或留空 `DB_*` 即跳过持久化，其余功能不受�
 **Q：订阅提示“返回 HTML 页面”？**
 A：通常是订阅令牌失效、被运营商劫持，或该订阅需要先通过代理拉取。可在 `.env` 配置 `SUBSCRIPTION_PROXY` 指向本地代理。
 
+**Q：启动提示“未找到 xray 或 sing-box 内核二进制”？**
+A：确认 `bin/` 下的文件名与权限：Linux 需 `chmod +x bin/xray bin/sing-box`；也可用 `XRAY_BIN` / `SINGBOX_BIN` 指定绝对路径。至少提供一个内核才能运行。
+
+**Q：Windows 下控制台中文乱码？**
+A：程序启动时已将 stdout/stderr 切换为 UTF-8；若仍异常，请先执行 `chcp 65001` 或改用 Windows Terminal。
+
+**Q：巡检太慢 / 大量超时？**
+A：先用 `--limit` / `--filter` 缩小范围，适当降低 `--workers`；网络质量差时可增大 `PROBE_TIMEOUT`、`SITE_TIMEOUT`。
+
+**Q：只想看 Gemini 可用的节点？**
+A：运行 `--ok-only` 可精简终端输出；结果可直接使用 `export/passwall_nodes_gemini_ok.txt`。配置 `GEMINI_1PSID` 后，提问结果会进一步区分「可用但提问受阻」。
+
 ---
+
+<a id="contributing"></a>
+
+## 🤝 贡献指南
+
+1. Fork 仓库并从 `main` 新建分支：`git switch -c feat/your-change`
+2. 遵循项目约定：
+   - 解析逻辑 → [`core/parsers.py`](./core/parsers.py)；订阅拉取 → [`core/subscription.py`](./core/subscription.py)；网络探测 → [`core/netprobe.py`](./core/netprobe.py)
+   - 内核配置与生命周期只在 [`core/engine.py`](./core/engine.py)，不要在 checker 中直接拼 JSON
+   - 模块间只传 [`core/models.py`](./core/models.py) 中的模型对象，避免裸 `dict`
+   - 所有可调参数集中到 [`core/config.py`](./core/config.py)，禁止散落魔法值
+   - 纯函数（解析 / 判定 / 配置生成）必须可单元测试，测试放 `tests/`
+3. 提交前运行单元测试与冒烟命令，并同步更新 `README.md` 与版本号（小改 +0.01 / 中改 +0.1 / 大改 +1）
+4. 发起 Pull Request，说明变更动机、影响范围与验证结果
+
+---
+
+<a id="disclaimer"></a>
+
+## ⚠️ 免责声明
+
+- 本项目仅用于个人学习、网络质量评估与自用节点筛选，请遵守所在地区法律法规及服务提供商条款。
+- 禁止用于商业转售、恶意扫描、攻击或任何侵害他人权益的用途。
+- 作者不对因使用本工具产生的任何直接或间接损失负责。
+- 订阅令牌、Gemini Cookie、数据库口令等敏感信息请自行妥善保管，切勿提交到公开仓库。
+
+---
+
+<a id="thanks"></a>
 
 ## 🌟 开源参考与致谢
 
@@ -389,6 +812,8 @@ A：通常是订阅令牌失效、被运营商劫持，或该订阅需要先通�
 - [**Clash-SpeedTest**](https://github.com/zhsama/clash-speedtest)：并发测速与报表看板设计
 - [**RegionRestrictionCheck**](https://github.com/xykt/RegionRestrictionCheck)：Google 特性开关与地区码解析算法
 - [**Sing-box**](https://github.com/SagerNet/sing-box) / [**Xray-core**](https://github.com/XTLS/Xray-core)：底层代理内核
+
+<a id="license"></a>
 
 ## 📄 License
 
