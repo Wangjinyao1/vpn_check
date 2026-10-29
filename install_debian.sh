@@ -82,19 +82,56 @@ case "$ARCH" in
     *) fail "暂不支持的架构: $ARCH" ;;
 esac
 
+# ---------- 临时目录 ----------
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "$TMP_DIR"' EXIT
+
 # ---------- 获取项目代码 ----------
 if [[ -f "$PROJECT_DIR/main.py" ]]; then
     log "检测到已有项目目录: $PROJECT_DIR"
-elif [[ -n "$REPO_URL" ]]; then
-    CLONE_URL="$(gh_url "$REPO_URL")"
-    log "克隆仓库到 $PROJECT_DIR ..."
-    log "  来源: $CLONE_URL"
-    mkdir -p "$(dirname "$PROJECT_DIR")"
-    if ! git clone --depth 1 "$CLONE_URL" "$PROJECT_DIR"; then
-        fail "克隆失败：若无法直连 GitHub，请设置 GH_PROXY=https://ghproxy.net/ 后重试，或改用 README 的离线部署方式"
-    fi
 else
-    fail "目录 $PROJECT_DIR 不存在且未提供 REPO_URL；请在仓库目录内执行，或设置 REPO_URL"
+    if [[ -d "$PROJECT_DIR" && -n "$(find "$PROJECT_DIR" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        if [[ -d "$PROJECT_DIR/.git" && ! -e "$PROJECT_DIR/main.py" ]]; then
+            warn "检测到不完整的克隆目录，清理后重试: $PROJECT_DIR"
+            rm -rf "$PROJECT_DIR"
+        else
+            fail "目录 $PROJECT_DIR 非空且未找到 main.py，请清理后重试，或用 --project-dir 指定其他目录"
+        fi
+    fi
+
+    if [[ -n "$REPO_URL" ]]; then
+        CLONE_URL="$(gh_url "$REPO_URL")"
+        log "获取项目代码到 $PROJECT_DIR ..."
+        log "  git 来源: $CLONE_URL"
+        mkdir -p "$(dirname "$PROJECT_DIR")"
+        if git clone --depth 1 "$CLONE_URL" "$PROJECT_DIR"; then
+            log "git clone 完成"
+        else
+            warn "git clone 失败，改用源码压缩包（不依赖 git 协议）..."
+            rm -rf "$PROJECT_DIR"
+            ARCHIVE_OK=0
+            if [[ "$REPO_URL" == https://github.com/* ]]; then
+                for BRANCH in main master; do
+                    ARCHIVE_URL="$(gh_url "${REPO_URL%.git}/archive/refs/heads/${BRANCH}.tar.gz")"
+                    log "  尝试: $ARCHIVE_URL"
+                    if curl -fsSL --connect-timeout 15 --retry 2 -o "$TMP_DIR/project.tar.gz" "$ARCHIVE_URL"; then
+                        ARCHIVE_OK=1
+                        break
+                    fi
+                done
+            fi
+            if [[ $ARCHIVE_OK -eq 1 ]]; then
+                mkdir -p "$PROJECT_DIR"
+                if ! tar -xzf "$TMP_DIR/project.tar.gz" -C "$PROJECT_DIR" --strip-components=1; then
+                    fail "源码压缩包解压失败: $TMP_DIR/project.tar.gz"
+                fi
+                warn "已通过源码压缩包安装（无 .git 目录，后续更新可重新执行本脚本）"
+            fi
+            [[ -f "$PROJECT_DIR/main.py" ]] || fail "无法获取项目代码：git clone 与压缩包下载均失败，请检查网络或改用 README 的离线部署方式"
+        fi
+    else
+        fail "目录 $PROJECT_DIR 不存在且未提供 REPO_URL；请在仓库目录内执行，或设置 REPO_URL"
+    fi
 fi
 cd "$PROJECT_DIR"
 
@@ -110,8 +147,6 @@ fi
 
 # ---------- 下载内核 ----------
 mkdir -p bin
-TMP_DIR="$(mktemp -d)"
-trap 'rm -rf "$TMP_DIR"' EXIT
 
 if [[ ! -x bin/xray ]]; then
     XRAY_URL="$(gh_url "https://github.com/XTLS/Xray-core/releases/latest/download/$XRAY_ASSET")"
