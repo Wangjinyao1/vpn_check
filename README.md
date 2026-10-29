@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Debian%2013%20%7C%20Windows-lightgrey.svg)](./install_debian.sh)
-[![Version](https://img.shields.io/badge/Version-9.01-brightgreen.svg)](#changelog)
+[![Version](https://img.shields.io/badge/Version-9.02-brightgreen.svg)](#changelog)
 [![GitHub stars](https://img.shields.io/github/stars/Wangjinyao1/vpn_check?style=social)](https://github.com/Wangjinyao1/vpn_check)
 
 > 面向中国大陆网络环境的机场节点质量评估工具：用真实代理内核逐节点建隧道，按 OpenWrt-Passwall 规则分级，验证 Google / Gemini / Grok 可达性与 Gemini 真实提问能力，并导出可直接落地的 Passwall 配置。
@@ -348,7 +348,7 @@ python main.py --quiet
 
 ```text
 ==================================================================
-  🌐 VPN Node Evaluator & Passwall Optimizer v9.01
+  🌐 VPN Node Evaluator & Passwall Optimizer v9.02
   严格遵循 OpenWrt-Passwall、Gemini-Config-Checker 与项目开发规范
 ==================================================================
 📡 [1/3] 拉取订阅（共 2 个订阅源）...
@@ -409,6 +409,8 @@ sudo GH_PROXY=https://ghproxy.net/ bash /tmp/install_debian.sh
 > `GH_PROXY` 会同时作用于仓库获取与 Xray / Sing-box 内核下载。
 >
 > 若镜像不支持 git 协议（例如 `GnuTLS, handshake failed`），脚本会**自动回退到源码压缩包**（`archive/refs/heads/main.tar.gz`，仅用 curl + tar），无需 git。
+>
+> 内核下载会强制 HTTP/1.1，并按 `GH_PROXY → gh-proxy.com → ghfast.top → ghproxy.net → 直连` 的顺序自动重试，规避镜像 502 / HTTP/2 断流。
 
 根目录的 [`install_debian.sh`](./install_debian.sh) 会自动完成：
 
@@ -508,6 +510,7 @@ sudo env PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash install_deb
 | `curl: (28) Connection timed out ... raw.githubusercontent.com` | 无法直连 GitHub Raw（大陆网络常见） | 用方式 D，或镜像 / 代理 |
 | `fatal: unable to access 'https://github.com/...'` | github.com 不可达 | 设置 `GH_PROXY=https://ghproxy.net/` 重试，或用方式 D |
 | `GnuTLS, handshake failed: The TLS connection was non-properly terminated` | 镜像不转发 git 协议 | 脚本会自动改用源码压缩包；也可手动下载 `archive/refs/heads/main.tar.gz` 解压 |
+| `curl: (92) HTTP/2 stream ... INTERNAL_ERROR` 或 `curl: (22) ... 502` | 镜像对大文件支持不稳定 | 脚本已强制 HTTP/1.1 并自动切换备用镜像；仍失败可手动上传 `bin/` 内核 |
 | `Could not find a version that satisfies the requirement ...` | PyPI 不可达 | 设置 `PIP_INDEX_URL` 为国内镜像 |
 | `未获得任何代理内核` | 内核下载失败且 `bin/` 为空 | 本地下载 Linux 内核并上传到 `bin/` |
 
@@ -628,7 +631,7 @@ schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
 | --- | --- | --- |
 | `SINGBOX_VERSION` | 最新版本，失败回退 `v1.13.16` | `install_debian.sh` 下载的 Sing-box 版本 |
 | `REPO_URL` | `https://github.com/Wangjinyao1/vpn_check.git` | 一键安装时用于克隆仓库的地址 |
-| `GH_PROXY` | 空 | GitHub 加速前缀（如 `https://ghproxy.net/`），作用于 clone 与内核下载 |
+| `GH_PROXY` | 空 | 首选 GitHub 加速前缀；失败时自动尝试 `gh-proxy.com` / `ghfast.top` / `ghproxy.net` |
 
 > `.env` 已被 `.gitignore` 忽略，仓库只保留脱敏模板 [`.env.example`](./.env.example)。
 
@@ -747,10 +750,11 @@ git check-ignore -v .env Project_Require.md export/passwall_uci_ok.txt run_log.l
 
 ## 📈 版本迭代
 
-> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `9.01`。
+> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `9.02`。
 
 | 版本 | 日期 | 类型 | 变更摘要 |
 | --- | --- | --- | --- |
+| 9.02 | 2026-10-29 | 小改 (+0.01) | 内核下载改为多镜像自动回退（`GH_PROXY` → gh-proxy.com → ghfast.top → ghproxy.net → 直连），强制 HTTP/1.1 并加入重试 / 低速中断，修复镜像 502 与 HTTP/2 断流导致「未获得任何代理内核」 |
 | 9.01 | 2026-10-29 | 小改 (+0.01) | 修复镜像不支持 git 协议时的安装失败：`git clone` 失败自动回退源码压缩包（curl + tar），并自动清理不完整克隆目录；README 补充对应排错说明 |
 | 9.00 | 2026-10-29 | 大版本 (+1) | 精简定位：移除 MySQL 持久化层、`--no-db`、PyMySQL 依赖与全部数据表；IP 归属地简化为进程缓存 + ipinfo；新增「Gemini 提问成功」节点导出；专注 Google / Gemini / Grok 三站点与 Passwall 导出 |
 | 8.03 | 2026-10-29 | 小改 (+0.01) | 修复一键安装：`install_debian.sh` 默认 `REPO_URL`、新增 `GH_PROXY` 加速 clone 与内核下载、补充连接超时与失败提示；新增 `.gitattributes` 强制 shell 脚本 LF；README 增加「两条命令一键安装」 |

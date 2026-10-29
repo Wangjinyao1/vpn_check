@@ -39,6 +39,13 @@ if [[ -n "$GH_PROXY" && "$GH_PROXY" != */ ]]; then
     GH_PROXY="$GH_PROXY/"
 fi
 
+# 镜像不可用时按顺序自动尝试的备用加速前缀（最后还会尝试直连）
+GH_FALLBACK_MIRRORS=(
+    "https://gh-proxy.com/"
+    "https://ghfast.top/"
+    "https://ghproxy.net/"
+)
+
 log()  { printf '\033[32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[33m[warn]\033[0m %s\n' "$*"; }
 fail() { printf '\033[31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
@@ -50,6 +57,55 @@ gh_url() {
     else
         printf '%s' "$1"
     fi
+}
+
+download_asset() {
+    # 已配置 GH_PROXY：GH_PROXY → 备用镜像 → 直连
+    # 未配置 GH_PROXY：直连 → 备用镜像
+    # 全程强制 HTTP/1.1，规避镜像在 HTTP/2 大文件传输中的断流
+    local url="$1" dest="$2" mirror target duplicate existing
+    local -a order=() mirrors=()
+
+    if [[ -n "$GH_PROXY" ]]; then
+        order+=("$GH_PROXY")
+    else
+        order+=("")
+    fi
+    for mirror in "${GH_FALLBACK_MIRRORS[@]}"; do
+        order+=("$mirror")
+    done
+    if [[ -n "$GH_PROXY" ]]; then
+        order+=("")
+    fi
+
+    for mirror in "${order[@]}"; do
+        duplicate=0
+        for existing in "${mirrors[@]}"; do
+            if [[ "$existing" == "$mirror" ]]; then
+                duplicate=1
+                break
+            fi
+        done
+        if [[ $duplicate -eq 0 ]]; then
+            mirrors+=("$mirror")
+        fi
+    done
+
+    for mirror in "${mirrors[@]}"; do
+        if [[ -z "$mirror" ]]; then
+            target="$url"
+            log "  尝试直连: $url"
+        else
+            target="${mirror}${url}"
+            log "  尝试镜像: $target"
+        fi
+        if curl -fsSL --http1.1 --connect-timeout 15 --retry 2 --retry-all-errors --retry-delay 1 \
+            --speed-limit 1024 --speed-time 30 -o "$dest" "$target"; then
+            return 0
+        fi
+    done
+    rm -f "$dest"
+    return 1
 }
 
 while [[ $# -gt 0 ]]; do
@@ -112,9 +168,8 @@ else
             ARCHIVE_OK=0
             if [[ "$REPO_URL" == https://github.com/* ]]; then
                 for BRANCH in main master; do
-                    ARCHIVE_URL="$(gh_url "${REPO_URL%.git}/archive/refs/heads/${BRANCH}.tar.gz")"
-                    log "  尝试: $ARCHIVE_URL"
-                    if curl -fsSL --connect-timeout 15 --retry 2 -o "$TMP_DIR/project.tar.gz" "$ARCHIVE_URL"; then
+                    ARCHIVE_URL="${REPO_URL%.git}/archive/refs/heads/${BRANCH}.tar.gz"
+                    if download_asset "$ARCHIVE_URL" "$TMP_DIR/project.tar.gz"; then
                         ARCHIVE_OK=1
                         break
                     fi
@@ -149,10 +204,8 @@ fi
 mkdir -p bin
 
 if [[ ! -x bin/xray ]]; then
-    XRAY_URL="$(gh_url "https://github.com/XTLS/Xray-core/releases/latest/download/$XRAY_ASSET")"
     log "下载 Xray-core ($ARCH) ..."
-    log "  来源: $XRAY_URL"
-    if curl -fsSL --connect-timeout 15 --retry 2 -o "$TMP_DIR/xray.zip" "$XRAY_URL"; then
+    if download_asset "https://github.com/XTLS/Xray-core/releases/latest/download/$XRAY_ASSET" "$TMP_DIR/xray.zip"; then
         unzip -oq "$TMP_DIR/xray.zip" xray -d bin
         chmod +x bin/xray
     else
@@ -164,16 +217,15 @@ if [[ ! -x bin/sing-box ]]; then
     log "下载 Sing-box ($ARCH) ..."
     SB_TAG="${SINGBOX_VERSION:-}"
     if [[ -z "$SB_TAG" ]]; then
-        SB_TAG="$(curl -fsSL --connect-timeout 10 --max-time 20 \
+        SB_TAG="$(curl -fsSL --http1.1 --connect-timeout 10 --max-time 20 --retry 1 \
             "$(gh_url https://api.github.com/repos/SagerNet/sing-box/releases/latest)" \
             | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null || true)"
     fi
     # 避免 GitHub API 限流或不可达导致安装中断，回退到已验证版本
     SB_TAG="${SB_TAG:-v1.13.16}"
     SB_VER="${SB_TAG#v}"
-    SB_URL="$(gh_url "https://github.com/SagerNet/sing-box/releases/download/${SB_TAG}/sing-box-${SB_VER}-linux-${SB_ARCH}.tar.gz")"
-    log "  来源: $SB_URL"
-    if curl -fsSL --connect-timeout 15 --retry 2 -o "$TMP_DIR/sing-box.tar.gz" "$SB_URL"; then
+    SB_URL="https://github.com/SagerNet/sing-box/releases/download/${SB_TAG}/sing-box-${SB_VER}-linux-${SB_ARCH}.tar.gz"
+    if download_asset "$SB_URL" "$TMP_DIR/sing-box.tar.gz"; then
         tar -xzf "$TMP_DIR/sing-box.tar.gz" -C "$TMP_DIR"
         install -m 0755 "$TMP_DIR/sing-box-${SB_VER}-linux-${SB_ARCH}/sing-box" bin/sing-box
     else
