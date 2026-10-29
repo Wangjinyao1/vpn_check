@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Debian%2013%20%7C%20Windows-lightgrey.svg)](./install_debian.sh)
-[![Version](https://img.shields.io/badge/Version-8.01-brightgreen.svg)](#changelog)
+[![Version](https://img.shields.io/badge/Version-8.02-brightgreen.svg)](#changelog)
 [![GitHub stars](https://img.shields.io/github/stars/Wangjinyao1/vpn_check?style=social)](https://github.com/Wangjinyao1/vpn_check)
 
 > 面向中国大陆网络环境的机场节点质量评估工具：用真实代理内核逐节点建隧道，按 OpenWrt-Passwall 规则分级，验证 Google / Gemini / Grok 可达性与 Gemini 真实提问能力，并导出可直接落地的 Passwall 配置。
@@ -260,6 +260,8 @@ pip install -r requirements.txt
 ```
 
 > Debian 13 可直接使用一键安装脚本，自动完成依赖、内核、`.env` 与 systemd 定时器，见 [Debian 13 部署](#deploy)。
+>
+> 服务器无法直连 GitHub 时，请使用该章节的「方式 D：离线部署」。
 
 ### 3. 准备内核二进制
 
@@ -350,7 +352,7 @@ python main.py --quiet
 
 ```text
 ==================================================================
-  🌐 VPN Node Evaluator & Passwall Optimizer v8.01
+  🌐 VPN Node Evaluator & Passwall Optimizer v8.02
   严格遵循 OpenWrt-Passwall、Gemini-Config-Checker 与项目开发规范
 ==================================================================
 📡 [1/4] 拉取订阅（共 2 个订阅源）...
@@ -404,7 +406,7 @@ python main.py [options]
 4. 初始化 `.env`（若不存在）并将权限收紧为 `600`
 5. 安装 `vpn-check.service` 与 `vpn-check.timer`（默认每 2 小时巡检）
 
-### 方式 A：已克隆仓库
+### 方式 A：已克隆仓库（推荐）
 
 ```bash
 git clone https://github.com/Wangjinyao1/vpn_check.git /opt/vpn_check
@@ -413,18 +415,93 @@ sudo bash install_debian.sh
 ```
 
 > 脚本会自动识别所在目录；若项目不在脚本同级目录，可用 `--project-dir` 指定。
+> 若 `git clone` 卡住或超时，说明主机无法直连 GitHub，请改用 [方式 D](#deploy)。
 
-### 方式 B：从 GitHub 一键安装
+### 方式 B：已下载脚本 + 自动克隆项目
+
+脚本必须先存在于本机（`REPO_URL` 只负责克隆项目，**不能替代脚本文件本身**）：
 
 ```bash
-sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git bash install_debian.sh
+# 先把 install_debian.sh 下载或上传到 /tmp
+sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git \
+  bash /tmp/install_debian.sh --project-dir /opt/vpn_check
 ```
 
-### 方式 C：远程脚本直装
+> 在空目录直接执行 `bash install_debian.sh` 会报
+> `bash: install_debian.sh: No such file or directory`。
+
+### 方式 C：远程脚本直装（需可访问 GitHub Raw）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wangjinyao1/vpn_check/main/install_debian.sh -o /tmp/install_debian.sh
 sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git bash /tmp/install_debian.sh
+```
+
+> `raw.githubusercontent.com` 在中国大陆常被 DNS 污染或阻断，表现为
+> `curl: (28) Connection timed out`。可改用镜像下载（执行前请先核对脚本内容）：
+>
+> ```bash
+> curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/Wangjinyao1/vpn_check/main/install_debian.sh -o /tmp/install_debian.sh
+> head -30 /tmp/install_debian.sh
+> ```
+
+### 方式 D：离线部署（GitHub 不可达时最可靠）
+
+在**能访问 GitHub 的电脑**上打包仓库（`git archive` 只收录已跟踪文件，自动排除 `.env`、`export/`、`bin/`）：
+
+```bash
+git clone https://github.com/Wangjinyao1/vpn_check.git
+cd vpn_check
+git archive --format=tar.gz -o ../vpn_check.tar.gz HEAD
+```
+
+把压缩包与 **Linux 内核**一起上传到服务器：
+
+```powershell
+scp .\vpn_check.tar.gz root@<服务器IP>:/root/
+scp .\bin\xray .\bin\sing-box root@<服务器IP>:/root/
+```
+
+在服务器上解压、放入内核并安装：
+
+```bash
+mkdir -p /opt/vpn_check
+tar -xzf /root/vpn_check.tar.gz -C /opt/vpn_check
+mkdir -p /opt/vpn_check/bin
+install -m 0755 /root/xray /root/sing-box /opt/vpn_check/bin/
+cd /opt/vpn_check
+sudo bash install_debian.sh          # 检测到 bin/ 内核后会自动跳过下载
+```
+
+若 PyPI 也不可达，可指定国内镜像后再安装依赖：
+
+```bash
+sudo env PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash install_debian.sh
+```
+
+> 内核也可从任意能联网的机器下载后上传：`Xray-linux-64.zip`、
+> `sing-box-1.13.16-linux-amd64.tar.gz`，架构必须与服务器一致（常见为 x86_64）。
+
+### 部署常见报错
+
+| 报错 | 原因 | 处理 |
+| --- | --- | --- |
+| `bash: install_debian.sh: No such file or directory` | 当前目录没有脚本（未 clone / 未下载） | 先按方式 A / B / C / D 把脚本放到本机 |
+| `curl: (28) Connection timed out ... raw.githubusercontent.com` | 无法直连 GitHub Raw（大陆网络常见） | 用方式 D，或镜像 / 代理 |
+| `fatal: unable to access 'https://github.com/...'` | github.com 不可达 | 用方式 D，或让 clone 走代理 / 镜像 |
+| `Could not find a version that satisfies the requirement ...` | PyPI 不可达 | 设置 `PIP_INDEX_URL` 为国内镜像 |
+| `未获得任何代理内核` | 内核下载失败且 `bin/` 为空 | 本地下载 Linux 内核并上传到 `bin/` |
+
+> 若服务器已有本地代理（如 `127.0.0.1:7890`），可让脚本继承代理变量：
+> `sudo env https_proxy=http://127.0.0.1:7890 http_proxy=http://127.0.0.1:7890 bash install_debian.sh`
+
+诊断网络连通性：
+
+```bash
+getent hosts github.com raw.githubusercontent.com api.github.com
+curl -I -m 10 https://github.com
+curl -I -m 10 https://raw.githubusercontent.com
+env | grep -i proxy
 ```
 
 安装完成后：
@@ -733,10 +810,11 @@ git check-ignore -v .env Project_Require.md export/passwall_uci_ok.txt run_log.l
 
 ## 📈 版本迭代
 
-> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `8.01`。
+> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `8.02`。
 
 | 版本 | 日期 | 类型 | 变更摘要 |
 | --- | --- | --- | --- |
+| 8.02 | 2026-10-29 | 小改 (+0.01) | 修正部署文档：方式 B 必须先有脚本文件；新增「离线部署」（`git archive` + 上传 Linux 内核）、GitHub 不可达排错表、PyPI 镜像与代理用法 |
 | 8.01 | 2026-10-29 | 小改 (+0.01) | 完善 README：新增徽章与目录、完整 `.env` 配置参考、探针清单、Gemini 三态结果、失败码说明、Passwall 导入步骤、单元测试与贡献指南，并将安装命令替换为仓库真实地址 |
 | 8.00 | 2026-10-28 | 大版本 (+1) | 全量模块化重构：拆分 models/parsers/subscription/netprobe/report/logging；修复 VMess `net` 传输映射、WS Host 字段、Xray 26 `allowInsecure` 移除、Sing-box AnyTLS/Hysteria2 配置、记录表去重与字段溢出；新增浏览器指纹网页探测、内核降级、Passwall Gemini 清单、Debian 13 一键安装、保密性审查清单、单元测试 |
 | 7.00 | 2026-10-16 | 基线 | 重构前的单文件核心版本 |
