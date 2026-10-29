@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Debian%2013%20%7C%20Windows-lightgrey.svg)](./install_debian.sh)
-[![Version](https://img.shields.io/badge/Version-8.02-brightgreen.svg)](#changelog)
+[![Version](https://img.shields.io/badge/Version-8.03-brightgreen.svg)](#changelog)
 [![GitHub stars](https://img.shields.io/github/stars/Wangjinyao1/vpn_check?style=social)](https://github.com/Wangjinyao1/vpn_check)
 
 > 面向中国大陆网络环境的机场节点质量评估工具：用真实代理内核逐节点建隧道，按 OpenWrt-Passwall 规则分级，验证 Google / Gemini / Grok 可达性与 Gemini 真实提问能力，并导出可直接落地的 Passwall 配置。
@@ -352,7 +352,7 @@ python main.py --quiet
 
 ```text
 ==================================================================
-  🌐 VPN Node Evaluator & Passwall Optimizer v8.02
+  🌐 VPN Node Evaluator & Passwall Optimizer v8.03
   严格遵循 OpenWrt-Passwall、Gemini-Config-Checker 与项目开发规范
 ==================================================================
 📡 [1/4] 拉取订阅（共 2 个订阅源）...
@@ -398,6 +398,21 @@ python main.py [options]
 
 ## 🖥️ Debian 13 部署与定时任务
 
+### 一键安装（两条命令）
+
+```bash
+# 能直连 GitHub
+curl -fsSL https://raw.githubusercontent.com/Wangjinyao1/vpn_check/main/install_debian.sh -o /tmp/install_debian.sh
+sudo bash /tmp/install_debian.sh
+
+# 无法直连 GitHub：用加速镜像下载脚本，并让脚本也走镜像
+curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/Wangjinyao1/vpn_check/main/install_debian.sh -o /tmp/install_debian.sh
+sudo GH_PROXY=https://ghproxy.net/ bash /tmp/install_debian.sh
+```
+
+> 脚本在未提供 `REPO_URL` 时会**默认克隆本仓库**到 `/opt/vpn_check`，因此只需下载脚本即可安装；
+> `GH_PROXY` 会同时作用于 `git clone` 与 Xray / Sing-box 内核下载。
+
 根目录的 [`install_debian.sh`](./install_debian.sh) 会自动完成：
 
 1. 安装 `python3` / `python3-venv` / `git` / `curl` / `unzip` 等系统依赖
@@ -422,9 +437,14 @@ sudo bash install_debian.sh
 脚本必须先存在于本机（`REPO_URL` 只负责克隆项目，**不能替代脚本文件本身**）：
 
 ```bash
-# 先把 install_debian.sh 下载或上传到 /tmp
-sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git \
-  bash /tmp/install_debian.sh --project-dir /opt/vpn_check
+# 先把 install_debian.sh 下载或上传到 /tmp 后执行
+sudo bash /tmp/install_debian.sh --project-dir /opt/vpn_check
+
+# GitHub 不可达时
+sudo GH_PROXY=https://ghproxy.net/ bash /tmp/install_debian.sh --project-dir /opt/vpn_check
+
+# 自定义仓库地址
+sudo REPO_URL=https://github.com/<owner>/<repo>.git bash /tmp/install_debian.sh
 ```
 
 > 在空目录直接执行 `bash install_debian.sh` 会报
@@ -434,15 +454,16 @@ sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git \
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Wangjinyao1/vpn_check/main/install_debian.sh -o /tmp/install_debian.sh
-sudo REPO_URL=https://github.com/Wangjinyao1/vpn_check.git bash /tmp/install_debian.sh
+sudo bash /tmp/install_debian.sh
 ```
 
 > `raw.githubusercontent.com` 在中国大陆常被 DNS 污染或阻断，表现为
-> `curl: (28) Connection timed out`。可改用镜像下载（执行前请先核对脚本内容）：
+> `curl: (28) Connection timed out`。可改用镜像下载并让脚本走镜像（执行前请先核对脚本内容）：
 >
 > ```bash
 > curl -fsSL https://ghproxy.net/https://raw.githubusercontent.com/Wangjinyao1/vpn_check/main/install_debian.sh -o /tmp/install_debian.sh
-> head -30 /tmp/install_debian.sh
+> head -22 /tmp/install_debian.sh
+> sudo GH_PROXY=https://ghproxy.net/ bash /tmp/install_debian.sh
 > ```
 
 ### 方式 D：离线部署（GitHub 不可达时最可靠）
@@ -488,7 +509,7 @@ sudo env PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple bash install_deb
 | --- | --- | --- |
 | `bash: install_debian.sh: No such file or directory` | 当前目录没有脚本（未 clone / 未下载） | 先按方式 A / B / C / D 把脚本放到本机 |
 | `curl: (28) Connection timed out ... raw.githubusercontent.com` | 无法直连 GitHub Raw（大陆网络常见） | 用方式 D，或镜像 / 代理 |
-| `fatal: unable to access 'https://github.com/...'` | github.com 不可达 | 用方式 D，或让 clone 走代理 / 镜像 |
+| `fatal: unable to access 'https://github.com/...'` | github.com 不可达 | 设置 `GH_PROXY=https://ghproxy.net/` 重试，或用方式 D |
 | `Could not find a version that satisfies the requirement ...` | PyPI 不可达 | 设置 `PIP_INDEX_URL` 为国内镜像 |
 | `未获得任何代理内核` | 内核下载失败且 `bin/` 为空 | 本地下载 Linux 内核并上传到 `bin/` |
 
@@ -618,7 +639,8 @@ schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `SINGBOX_VERSION` | 最新版本，失败回退 `v1.13.16` | `install_debian.sh` 下载的 Sing-box 版本 |
-| `REPO_URL` | 空 | 一键安装时用于克隆仓库的地址 |
+| `REPO_URL` | `https://github.com/Wangjinyao1/vpn_check.git` | 一键安装时用于克隆仓库的地址 |
+| `GH_PROXY` | 空 | GitHub 加速前缀（如 `https://ghproxy.net/`），作用于 clone 与内核下载 |
 
 > `.env` 已被 `.gitignore` 忽略，仓库只保留脱敏模板 [`.env.example`](./.env.example)。
 
@@ -810,10 +832,11 @@ git check-ignore -v .env Project_Require.md export/passwall_uci_ok.txt run_log.l
 
 ## 📈 版本迭代
 
-> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `8.02`。
+> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `8.03`。
 
 | 版本 | 日期 | 类型 | 变更摘要 |
 | --- | --- | --- | --- |
+| 8.03 | 2026-10-29 | 小改 (+0.01) | 修复一键安装：`install_debian.sh` 默认 `REPO_URL`、新增 `GH_PROXY` 加速 clone 与内核下载、补充连接超时与失败提示；新增 `.gitattributes` 强制 shell 脚本 LF；README 增加「两条命令一键安装」 |
 | 8.02 | 2026-10-29 | 小改 (+0.01) | 修正部署文档：方式 B 必须先有脚本文件；新增「离线部署」（`git archive` + 上传 Linux 内核）、GitHub 不可达排错表、PyPI 镜像与代理用法 |
 | 8.01 | 2026-10-29 | 小改 (+0.01) | 完善 README：新增徽章与目录、完整 `.env` 配置参考、探针清单、Gemini 三态结果、失败码说明、Passwall 导入步骤、单元测试与贡献指南，并将安装命令替换为仓库真实地址 |
 | 8.00 | 2026-10-28 | 大版本 (+1) | 全量模块化重构：拆分 models/parsers/subscription/netprobe/report/logging；修复 VMess `net` 传输映射、WS Host 字段、Xray 26 `allowInsecure` 移除、Sing-box AnyTLS/Hysteria2 配置、记录表去重与字段溢出；新增浏览器指纹网页探测、内核降级、Passwall Gemini 清单、Debian 13 一键安装、保密性审查清单、单元测试 |

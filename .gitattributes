@@ -1,0 +1,2 @@
+# 统一换行符：避免 Windows 检出 CRLF 后，bash 脚本在 Linux 上出现 $'\r' 语法错误
+*.sh text eol=lf
