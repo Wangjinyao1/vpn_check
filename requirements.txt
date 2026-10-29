@@ -1,3 +1,2 @@
 PySocks>=1.7.1
-PyMySQL>=1.2.0
 curl_cffi>=0.16

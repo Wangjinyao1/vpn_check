@@ -12,10 +12,9 @@
 - netprobe     SOCKS5 HTTP 探针
 - checker      探测管道与并发调度
 - gemini       Gemini 地区封锁与提问验证
-- ip_location  IP 归属地缓存与回源
-- database     MySQL 持久化
+- ip_location  IP 归属地查询（进程缓存 + ipinfo）
 - exporter     OpenWrt-Passwall 产物导出
 - report       终端决策看板
 """
 
-__version__ = "8.03"
+__version__ = "9.00"

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """core/models.py — 领域模型
 ============================
-集中定义节点、探针与测试结果的不可变数据结构，供解析、探测、导出与持久化复用。
+集中定义节点、探针与测试结果的不可变数据结构，供解析、探测与导出复用。
 """
 
 from __future__ import annotations
@@ -205,6 +205,10 @@ class NodeResult:
     @property
     def gemini_available(self) -> bool:
         return bool(self.gemini and self.gemini.available)
+
+    @property
+    def gemini_chat_ok(self) -> bool:
+        return bool(self.gemini and self.gemini.chat_ok is True)
 
     def site_ok(self, name: str) -> bool:
         probe = self.sites.get(name)

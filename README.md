@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Debian%2013%20%7C%20Windows-lightgrey.svg)](./install_debian.sh)
-[![Version](https://img.shields.io/badge/Version-8.03-brightgreen.svg)](#changelog)
+[![Version](https://img.shields.io/badge/Version-9.00-brightgreen.svg)](#changelog)
 [![GitHub stars](https://img.shields.io/github/stars/Wangjinyao1/vpn_check?style=social)](https://github.com/Wangjinyao1/vpn_check)
 
 > 面向中国大陆网络环境的机场节点质量评估工具：用真实代理内核逐节点建隧道，按 OpenWrt-Passwall 规则分级，验证 Google / Gemini / Grok 可达性与 Gemini 真实提问能力，并导出可直接落地的 Passwall 配置。
@@ -22,7 +22,6 @@
 - [命令行参数](#cli)
 - [Debian 13 部署与定时任务](#deploy)
 - [配置参考（.env）](#config)
-- [数据表说明与聚合关系（MySQL）](#database)
 - [Passwall 导出产物](#export)
 - [单元测试与验证](#testing)
 - [上传 GitHub 前的保密性审查](#security)
@@ -52,7 +51,7 @@
 - 自用机场订阅节点太多，想知道哪些真的能上网、哪些能稳定访问 AI 服务
 - 使用 OpenWrt + Passwall，需要可直接导入的节点 / 订阅 / UCI 脚本
 - 需要区分 Gemini 的「网页可访问」「地区封锁」「真实提问可用」三种状态
-- 希望把巡检结果沉淀到 MySQL，长期观察节点质量变化
+- 希望结果只保存在本地（无数据库、无外部依赖）
 
 **不适用**：商业转售、批量压测、共享账号滥用，或任何违反服务条款的用途。
 
@@ -70,11 +69,11 @@
 - **Gemini 双引擎判据**：
   - 免登录：解析 Google 前端特性开关 `45631641` 与 GeoIP 三位地区码（对齐 `xykt/RegionRestrictionCheck`）。
   - 登录提问：配置 `GEMINI_1PSID` 后调用 `StreamGenerate` 发起真实问答，验证模型是否可用（对齐 `MatinSenPai/Gemini-Config-Checker`）。
-- **出海落地识别**：Cloudflare trace 获取落地 IP，归属地优先读通用缓存表，缺失时回源并写回。
+- **出海落地识别**：Cloudflare trace 获取落地 IP，归属地走进程内缓存，未命中时 ipinfo 回源。
 - **全协议解析**：VLESS（Reality/Vision）、VMess、Trojan、Shadowsocks（SIP002/2022/插件）、Hysteria2（端口跳跃/混淆）、AnyTLS。
-- **订阅配额识别**：解析 `Subscription-Userinfo`，展示节余流量与到期时间；远端缺失时继承数据库历史值。
-- **Passwall 原生导出**：节点链接、Base64 订阅、Gemini 可用节点清单、UCI 导入脚本。
-- **可选持久化**：MySQL 记录节点、逐次测试结果与批次汇总，支持查重去重。
+- **订阅配额识别**：解析 `Subscription-Userinfo`，展示节余流量与到期时间。
+- **Passwall 原生导出**：节点链接、Base64 订阅、Gemini 可访问清单、Gemini 提问成功清单、UCI 导入脚本。
+- **零数据库**：不依赖 MySQL / Redis / SQLite，结果只落本地报告与 Passwall 导出，部署即用。
 - **纯 CLI / One-Shot**：适配 Cron / systemd timer，日志单文件 3MB 封顶。
 - **配置集中**：阈值、探针、超时全部集中在 `core/config.py`，敏感项仅从 `.env` 读取。
 - **失败可归类**：`TIMEOUT` / `TLS_ERROR` / `PROXY_CONNECT_FAIL` 等失败码，便于批量排查与统计。
@@ -104,7 +103,7 @@
         三网页探测 + 落地 IP/归属地 + Gemini 地区判定 + 可选提问验证
                      │
                      ▼
-        终端看板 + 报告归档 + Passwall 导出 + MySQL 持久化
+        终端看板 + 报告归档 + Passwall 导出
 ```
 
 ### 连通分级（对齐 Passwall）
@@ -169,11 +168,11 @@
 
 ```text
 vpn_check/
-├── main.py                    # CLI 入口：编排拉取 → 探测 → 报告 → 导出 → 入库
+├── main.py                    # CLI 入口：编排拉取 → 探测 → 报告 → 导出
 ├── net_check.py               # 兼容旧入口，转发 main.main()
 ├── install_debian.sh          # Debian 13 一键安装（依赖/内核/venv/systemd timer）
 ├── run_check.sh               # Linux 手动/定时执行包装脚本
-├── requirements.txt           # PySocks / PyMySQL / curl_cffi
+├── requirements.txt           # PySocks / curl_cffi
 ├── core/
 │   ├── config.py              # 统一配置中心（.env 解析、探针规则、路径、超时）
 │   ├── models.py              # 领域模型（ProxyNode / SiteProbe / GeminiVerdict / NodeResult）
@@ -183,13 +182,12 @@ vpn_check/
 │   ├── netprobe.py            # SOCKS5 HTTP 探针、落地 IP 探测
 │   ├── checker.py             # 探测管道、三级分级、并发调度
 │   ├── gemini.py              # Gemini 地区封锁与提问验证
-│   ├── ip_location.py         # IP 归属地缓存 / 助手脚本 / ipinfo 回源
-│   ├── database.py            # MySQL DDL、去重写入、缓存查询
+│   ├── ip_location.py         # IP 归属地（进程缓存 + ipinfo 回源）
 │   ├── exporter.py            # Passwall 链接 / Base64 / UCI 导出
 │   ├── report.py              # 终端决策看板
 │   └── logging_setup.py       # run_log.log（单文件 3MB）
 ├── tests/test_core.py         # 解析 / 配置 / 导出 / Gemini 判据单元测试
-├── bin/                       # 内核二进制（不入库，安装脚本自动下载）
+├── bin/                       # 内核二进制（不提交，安装脚本自动下载）
 ├── export/                    # Passwall 导出产物（含节点凭据，禁止提交）
 ├── .github/
 │   └── copilot-instructions.md # 项目记忆：开发规范、结构约定与验证要求
@@ -208,7 +206,7 @@ vpn_check/
 | 3. 建隧道 | `core/engine.py` | 生成 Xray / Sing-box 配置，启停 SOCKS5 隧道 |
 | 4. 探测 | `core/netprobe.py` + `core/checker.py` | 国际 / 国内探针、网页探测、并发调度 |
 | 5. 判定 | `core/gemini.py` + `core/ip_location.py` | Gemini 三态判定、落地 IP 与归属地 |
-| 6. 输出 | `core/report.py` / `core/exporter.py` / `core/database.py` | 终端看板、Passwall 导出、MySQL 入库 |
+| 6. 输出 | `core/report.py` / `core/exporter.py` | 终端看板、报告归档、Passwall 导出 |
 
 <a id="kernel"></a>
 
@@ -236,8 +234,7 @@ vpn_check/
 | Python | 3.10+ | 使用 `dataclasses` 与 `from __future__ import annotations` |
 | 操作系统 | Debian 13 / Ubuntu 22.04+ / Windows 10+ | Linux 推荐部署在 VPS 或软路由旁路主机 |
 | 代理内核 | `bin/xray` + `bin/sing-box` | Windows 为 `xray.exe` / `sing-box.exe` |
-| Python 依赖 | `PySocks` / `PyMySQL` / `curl_cffi` | `pip install -r requirements.txt` |
-| MySQL | 可选 | 未配置账号时自动跳过持久化 |
+| Python 依赖 | `PySocks` / `curl_cffi` | `pip install -r requirements.txt` |
 | 网络 | 可访问 GitHub 与订阅地址 | 订阅直连失败时可配置本地代理 |
 
 ### 2. 获取代码与安装依赖
@@ -317,7 +314,6 @@ SUBSCRIBE_URL_1=https://example.com/api/v1/client/subscribe?token=your_token
 | 变量 | 作用 |
 | --- | --- |
 | `GEMINI_1PSID` / `GEMINI_1PSIDTS` | 启用 Gemini 真实提问验证 |
-| `DB_*` | 启用 MySQL 持久化 |
 | `SUBSCRIPTION_PROXY` | 订阅直连失败时依次尝试的本地代理 |
 | `GEMINI_CHAT_QUESTION` / `GEMINI_CHAT_EXPECT` | 自定义提问内容与期望答案 |
 
@@ -326,11 +322,11 @@ SUBSCRIBE_URL_1=https://example.com/api/v1/client/subscribe?token=your_token
 ### 5. 运行
 
 ```powershell
-# 完整巡检：拉取 → 隧道 → 探测 → Gemini → 报告 → 导出 → 入库
+# 完整巡检：拉取 → 隧道 → 探测 → Gemini → 报告 → 导出
 python main.py
 
-# 调试：仅测 3 个节点，跳过提问与数据库
-python main.py --limit 3 --skip-gemini-chat --no-db
+# 调试：仅测 3 个节点，跳过 Gemini 提问
+python main.py --limit 3 --skip-gemini-chat
 
 # 只测 VLESS，20 并发，控制台只看可用节点
 python main.py --protocol vless --workers 20 --ok-only
@@ -345,22 +341,22 @@ python main.py --quiet
 | --- | --- | --- |
 | 终端看板 | stdout | 总览、可用节点榜、订阅质量、失败原因 |
 | 报告归档 | `test_results.txt` | 与终端看板内容一致，可用 `--report-file` 改写 |
-| Passwall 导出 | `export/` | 节点链接、Base64 订阅、UCI 脚本 |
+| Passwall 导出 | `export/` | 节点链接、Gemini 可访问 / 提问成功清单、Base64 订阅、UCI 脚本 |
 | 运行日志 | `run_log.log` | 单文件 3MB 封顶，不产生备份文件 |
 
 终端输出示例（实际结果随订阅与网络环境变化）：
 
 ```text
 ==================================================================
-  🌐 VPN Node Evaluator & Passwall Optimizer v8.03
+  🌐 VPN Node Evaluator & Passwall Optimizer v9.00
   严格遵循 OpenWrt-Passwall、Gemini-Config-Checker 与项目开发规范
 ==================================================================
-📡 [1/4] 拉取订阅（共 2 个订阅源）...
+📡 [1/3] 拉取订阅（共 2 个订阅源）...
   ✅ 机场A                获取  86 节点（  3.2s，节余流量: 128.4 GB）
-🚀 [2/4] 启动内核隧道探测（42 节点，10 并发）...
-  [12/42] 🟢 香港-Reality   23ms  Gemini ✅  Google ✅  Grok ✅
-📋 [3/4] 汇总测试报告 ...
-✨ 共 42 节点：🟢 代理通 31 / 🟡 仅直连 4 / 🔴 无网络 7；Gemini 可用 18，提问成功 9
+🚀 [2/3] 启动内核隧道探测（42 节点，10 并发）...
+ [ 12/ 42] 🟢 代理通 | 香港-Reality | 23ms | 203.0.113.8 (JP Tokyo Tokyo) | Gemini:JPN
+📋 [3/3] 汇总测试报告 ...
+✨ 总计 42 | 🟢 代理通 31 | 🤖 Gemini 可用 18 | 💬 提问成功 9
 ```
 
 ---
@@ -381,7 +377,6 @@ python main.py [options]
 | `--workers N` | `10` | 并发线程数；实际取值受 `MAX_WORKERS`（默认 32）与节点总数约束 |
 | `--skip-gemini` | 关闭 | 跳过 Gemini 深度检测（仍探测网页可达性） |
 | `--skip-gemini-chat` | 关闭 | Gemini 仅测地区封锁，不发起提问 |
-| `--no-db` | 关闭 | 不写 MySQL |
 | `--no-export` | 关闭 | 不导出 Passwall 配置 |
 | `--ok-only` | 关闭 | 控制台仅展示总览与可用节点榜 |
 | `--quiet`, `-q` | 关闭 | 静默模式，仅输出最终摘要 |
@@ -528,7 +523,7 @@ env | grep -i proxy
 安装完成后：
 
 ```bash
-sudo nano /opt/vpn_check/.env          # 填入订阅与数据库配置
+sudo nano /opt/vpn_check/.env          # 填入订阅与 Gemini Cookie
 sudo systemctl start vpn-check.service # 立即执行一次
 systemctl status vpn-check.timer       # 查看每 2 小时定时器
 journalctl -u vpn-check.service -f     # 查看 systemd 执行日志
@@ -616,23 +611,13 @@ schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
 | `MAX_WORKERS` | `32` | 并发上限（`--workers` 超出时自动收敛） |
 | `VPN_CHECK_TEMP_DIR` | `.temp` | 运行期临时目录（仅读取系统环境变量；文件以 `temp_` 开头） |
 
-### 数据库与归属地（可选）
+### IP 归属地（可选）
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `DB_ENABLED` | `1` | 设为 `0` 或使用 `--no-db` 可完全跳过持久化 |
-| `DB_HOST` | `127.0.0.1` | MySQL / MariaDB 地址 |
-| `DB_PORT` | `3306` | 端口 |
-| `DB_USER` | 空 | 账号；未配置时自动跳过持久化 |
-| `DB_PASSWORD` | 空 | 密码 |
-| `DB_DATABASE` | 空 | 库名（需提前创建） |
-| `DB_CHARSET` | `utf8mb4` | 字符集 |
-| `DB_CONNECT_TIMEOUT` | `3` | 连接超时（秒） |
-| `IP_LOCATION_TABLE` | `ip_address_location` | 跨项目共享的 IP 归属地字典表名 |
-| `IP_LOCATION_HELPER` | 空 | 外部查询脚本路径（如 `check_ip_add_only.py`）；留空时自动探测项目上层的 `API/check_ip_add` 目录 |
 | `IP_LOCATION_TIMEOUT` | `6` | 归属地查询超时（秒） |
 | `IPINFO_TOKEN` | 空 | ipinfo.io Token（可选，提高配额） |
-| `IPINFO_URL` | `https://ipinfo.io/{ip}/json` | 回源查询地址模板 |
+| `IPINFO_URL` | `https://ipinfo.io/{ip}/json` | 查询地址模板 |
 
 ### 安装脚本专用
 
@@ -646,80 +631,6 @@ schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
 
 ---
 
-<a id="database"></a>
-
-## 🗄️ 数据表说明与聚合关系（MySQL）
-
-所有业务表使用项目前缀 `vpn_check_`，主键自增，均含 `created_at` / `updated_at`。
-
-> 首次运行会自动建表，只需提前创建数据库并授予账号读写权限。DDL 与去重索引见 [`core/database.py`](./core/database.py)。
-
-### `vpn_check_node`：节点元数据
-
-| 字段 | 说明 |
-| --- | --- |
-| `fingerprint` | 连接指纹 SHA256（协议+地址+端口+UUID+SNI+传输参数），**唯一索引去重** |
-| `name` / `protocol` / `address` / `port` / `uuid` / `sni` / `security` | 节点基本信息 |
-| `params_json` | 归一化后的传输与协议参数 |
-| `sub_name` / `sub_url` | 归属订阅 |
-| `raw_link` | 原始分享链接 |
-| `remaining_traffic` / `expire_time` | 机场配额快照 |
-
-### `vpn_check_test_record`：单节点测试记录
-
-每次巡检每个节点写入一条；`UNIQUE(node_id, tested_at)` 保证同批次重复执行不会重复写入。
-
-关键字段：`level`、`latency_ms`、`kernel`、`core_fallback`、`google_ok`、`gemini_ok`、`grok_ok`、`gemini_blocked`、`gemini_status`、`gemini_studio_status`、`gemini_api_ok`、`gemini_chat_ok`、`gemini_reply`、`gemini_region`、`outbound_ip`、`outbound_location`、`fail_code`、`fail_reason`。
-
-### `vpn_check_run_batch`：批次汇总
-
-`batch_time` 唯一；记录总节点数、三级数量、Gemini 可用与提问成功数量、批次耗时。与 `test_record` 通过 `batch_time ≈ tested_at` 逻辑关联（不建外键，便于按时间清理历史数据）。
-
-### `ip_address_location`：通用 IP 归属地字典（跨项目共享）
-
-`ip` 唯一索引；字段 `country` / `region` / `city` / `location` / `org` / `loc`。
-由 `outbound_ip = ip` 与测试记录关联，避免重复调用第三方 API。
-
-### 聚合关系
-
-```text
-vpn_check_node (1) ──< (N) vpn_check_test_record (N) >── (1) vpn_check_run_batch
-                                     │
-                                     └── outbound_ip ──► ip_address_location.ip
-```
-
-### 查询示例：每个节点的最新测试结果
-
-```sql
-SELECT
-    n.sub_name AS `订阅`,
-    n.name AS `节点`,
-    n.protocol AS `协议`,
-    CONCAT(n.address, ':', n.port) AS `入口`,
-    CASE r.level WHEN 0 THEN '🟢 代理通' WHEN 1 THEN '🟡 仅直连' ELSE '🔴 无网络' END AS `分级`,
-    r.latency_ms AS `延迟(ms)`,
-    r.outbound_ip AS `落地IP`,
-    r.outbound_location AS `落地归属地`,
-    IF(r.google_ok, '✅', '❌') AS `Google`,
-    CASE
-        WHEN r.gemini_blocked THEN '⛔ 地区封锁'
-        WHEN r.gemini_ok THEN CONCAT('✅ 可用 ', r.gemini_region)
-        ELSE '❌ 不通'
-    END AS `Gemini`,
-    IF(r.grok_ok, '✅', '❌') AS `Grok`,
-    CASE r.gemini_chat_ok WHEN 1 THEN '✅ 回答成功' WHEN 0 THEN '⚠️ 提问受阻' ELSE '➖ 未测' END AS `提问`,
-    r.tested_at AS `测试时间`
-FROM vpn_check_node n
-JOIN vpn_check_test_record r ON r.node_id = n.id
-JOIN (
-    SELECT MAX(id) AS max_id FROM vpn_check_test_record GROUP BY node_id
-) latest ON latest.max_id = r.id
-WHERE r.level = 0
-ORDER BY r.latency_ms ASC;
-```
-
----
-
 <a id="export"></a>
 
 ## 📦 Passwall 导出产物
@@ -729,12 +640,13 @@ ORDER BY r.latency_ms ASC;
 | 文件 | 用途 |
 | --- | --- |
 | `passwall_nodes_ok.txt` | 代理通节点分享链接（Passwall → 节点列表 → 导入粘贴） |
-| `passwall_nodes_gemini_ok.txt` | 代理通且 Gemini 可用的节点链接 |
+| `passwall_nodes_gemini_ok.txt` | 代理通且 Gemini 可访问的节点链接 |
+| `passwall_nodes_gemini_chat_ok.txt` | 代理通、Gemini 可访问且**真实提问成功**的节点链接 |
 | `passwall_nodes_ok_b64.txt` | 代理通节点 Base64 聚合（可作自定义订阅源） |
 | `passwall_nodes_all.txt` | 本次全部抓取节点链接 |
 | `passwall_uci_ok.txt` | UCI 批量导入脚本，上传路由器后 `sh passwall_uci_ok.txt` |
 
-UCI 字段严格对齐 Passwall `subscribe.lua`：`type`、`protocol`、`transport`、`ws_host/ws_path`、`grpc_serviceName`、`tls_serverName`、`utls/fingerprint`、`reality_*`、`hysteria2_*` 等。
+UCI 字段已逐项对照上游 [`subscribe.lua`](https://github.com/Openwrt-Passwall/openwrt-passwall/blob/main/luci-app-passwall/root/usr/share/passwall/subscribe.lua)：`type`、`protocol`、`transport`、`password`、`ws_host/ws_path`、`grpc_serviceName`、`httpupgrade_*`、`xhttp_*`、`tls_serverName`、`utls/fingerprint`、`reality_*`、`hysteria2_*` 等。
 
 ### 导入 Passwall
 
@@ -768,7 +680,7 @@ python -m unittest discover -s tests -v
 | 链接解析 | VLESS Reality / VLESS WS / VMess JSON / Hysteria2 / AnyTLS / Shadowsocks（含 SIP003 插件） |
 | 跨订阅去重 | 连接指纹 SHA256 去重 |
 | 内核配置 | Xray / Sing-box JSON 结构与字段映射 |
-| Passwall 导出 | UCI 字段映射与单引号转义 |
+| Passwall 导出 | UCI 字段映射、单引号转义、Gemini 可访问 / 提问成功清单筛选 |
 | Gemini 判据 | 特性开关、地区码、封锁文案、回复解析 |
 | 订阅配额 | `Subscription-Userinfo` 解析 |
 | 内核自检 | `xray run -test` / `sing-box check`（二进制存在时执行） |
@@ -776,15 +688,15 @@ python -m unittest discover -s tests -v
 ### 冒烟运行
 
 ```bash
-# 仅测 2 个节点，跳过 Gemini 提问、数据库与导出
-python main.py --limit 2 --skip-gemini-chat --no-db --no-export
+# 仅测 2 个节点，跳过 Gemini 提问与导出
+python main.py --limit 2 --skip-gemini-chat --no-export
 ```
 
 ### 提交前检查
 
 ```bash
 python -m unittest discover -s tests -v
-python main.py --limit 2 --skip-gemini-chat --no-db --no-export
+python main.py --limit 2 --skip-gemini-chat --no-export
 git status --short        # 确认无敏感文件进入暂存区
 ```
 
@@ -798,7 +710,7 @@ git status --short        # 确认无敏感文件进入暂存区
 
 ### 已隔离的敏感文件（`.gitignore`）
 
-- `.env`（订阅链接、Gemini Cookie、数据库账号）
+- `.env`（订阅链接、Gemini Cookie）
 - `Project_Require.md`（手写需求，含真实订阅令牌）
 - `export/`（节点分享链接与密码）
 - `.temp/`、`*.log`、`run_log.log`、`test_results.txt`
@@ -807,8 +719,8 @@ git status --short        # 确认无敏感文件进入暂存区
 
 ### 代码层约束
 
-- 代码中不含任何真实订阅 token、Cookie、数据库密码或个人信息路径。
-- 数据库默认值改为本机占位，账号/密码必须通过 `.env` 注入。
+- 代码中不含任何真实订阅 token、Cookie 或个人信息路径。
+- 所有敏感项必须通过 `.env` 注入，`.env.example` 只保留占位值。
 - Passwall 导出脚本对值做单引号转义，避免命令注入。
 
 ### 提交前自查
@@ -832,10 +744,11 @@ git check-ignore -v .env Project_Require.md export/passwall_uci_ok.txt run_log.l
 
 ## 📈 版本迭代
 
-> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `8.03`。
+> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `9.00`。
 
 | 版本 | 日期 | 类型 | 变更摘要 |
 | --- | --- | --- | --- |
+| 9.00 | 2026-10-29 | 大版本 (+1) | 精简定位：移除 MySQL 持久化层、`--no-db`、PyMySQL 依赖与全部数据表；IP 归属地简化为进程缓存 + ipinfo；新增「Gemini 提问成功」节点导出；专注 Google / Gemini / Grok 三站点与 Passwall 导出 |
 | 8.03 | 2026-10-29 | 小改 (+0.01) | 修复一键安装：`install_debian.sh` 默认 `REPO_URL`、新增 `GH_PROXY` 加速 clone 与内核下载、补充连接超时与失败提示；新增 `.gitattributes` 强制 shell 脚本 LF；README 增加「两条命令一键安装」 |
 | 8.02 | 2026-10-29 | 小改 (+0.01) | 修正部署文档：方式 B 必须先有脚本文件；新增「离线部署」（`git archive` + 上传 Linux 内核）、GitHub 不可达排错表、PyPI 镜像与代理用法 |
 | 8.01 | 2026-10-29 | 小改 (+0.01) | 完善 README：新增徽章与目录、完整 `.env` 配置参考、探针清单、Gemini 三态结果、失败码说明、Passwall 导入步骤、单元测试与贡献指南，并将安装命令替换为仓库真实地址 |
@@ -857,9 +770,6 @@ A：Google / Grok 列表示“链路可达”。Grok 前置 Cloudflare 风控，
 **Q：为什么某些 Hysteria2 节点显示 🔴？**
 A：Hysteria2 基于 QUIC/UDP。若本地网络封锁 UDP 或节点服务端离线，内核能启动但无法连通目标，会归类为 `PROXY_CONNECT_FAIL` 或 `TIMEOUT`。
 
-**Q：没有 MySQL 能否使用？**
-A：可以。`--no-db` 或留空 `DB_*` 即跳过持久化，其余功能不受影响。IP 归属地会自动降级到 ipinfo 回源。
-
 **Q：订阅提示“返回 HTML 页面”？**
 A：通常是订阅令牌失效、被运营商劫持，或该订阅需要先通过代理拉取。可在 `.env` 配置 `SUBSCRIPTION_PROXY` 指向本地代理。
 
@@ -873,7 +783,7 @@ A：程序启动时已将 stdout/stderr 切换为 UTF-8；若仍异常，请先�
 A：先用 `--limit` / `--filter` 缩小范围，适当降低 `--workers`；网络质量差时可增大 `PROBE_TIMEOUT`、`SITE_TIMEOUT`。
 
 **Q：只想看 Gemini 可用的节点？**
-A：运行 `--ok-only` 可精简终端输出；结果可直接使用 `export/passwall_nodes_gemini_ok.txt`。配置 `GEMINI_1PSID` 后，提问结果会进一步区分「可用但提问受阻」。
+A：运行 `--ok-only` 可精简终端输出；`export/passwall_nodes_gemini_ok.txt` 是「可访问」节点，`export/passwall_nodes_gemini_chat_ok.txt` 是「真实提问成功」节点（需配置 `GEMINI_1PSID`）。
 
 ---
 
@@ -900,7 +810,7 @@ A：运行 `--ok-only` 可精简终端输出；结果可直接使用 `export/pas
 - 本项目仅用于个人学习、网络质量评估与自用节点筛选，请遵守所在地区法律法规及服务提供商条款。
 - 禁止用于商业转售、恶意扫描、攻击或任何侵害他人权益的用途。
 - 作者不对因使用本工具产生的任何直接或间接损失负责。
-- 订阅令牌、Gemini Cookie、数据库口令等敏感信息请自行妥善保管，切勿提交到公开仓库。
+- 订阅令牌、Gemini Cookie 等敏感信息请自行妥善保管，切勿提交到公开仓库。
 
 ---
 

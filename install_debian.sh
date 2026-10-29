@@ -152,7 +152,7 @@ fi
 if [[ ! -f .env ]]; then
     cp .env.example .env
     chmod 600 .env
-    warn "已生成 .env，请编辑后填入订阅链接与数据库配置：nano $PROJECT_DIR/.env"
+    warn "已生成 .env，请编辑后填入订阅链接与 Gemini Cookie：nano $PROJECT_DIR/.env"
 else
     chmod 600 .env
     log "沿用已有 .env（权限已收紧为 600）"

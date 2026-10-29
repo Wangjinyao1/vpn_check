@@ -172,21 +172,24 @@ def export_artifacts(
     )
     ok_nodes = [result.node for result in ranked]
     gemini_nodes = [result.node for result in ranked if result.gemini_available]
+    chat_nodes = [result.node for result in ranked if result.gemini_chat_ok]
 
     all_path = export_dir / config.EXPORT_ALL_FILE
     ok_path = export_dir / config.EXPORT_OK_FILE
     b64_path = export_dir / config.EXPORT_B64_FILE
     gemini_path = export_dir / config.EXPORT_GEMINI_FILE
+    chat_path = export_dir / config.EXPORT_GEMINI_CHAT_FILE
     uci_path = export_dir / config.EXPORT_UCI_FILE
 
     total_links = _write_links(all_path, nodes)
     ok_links = _write_links(ok_path, ok_nodes)
     gemini_links = _write_links(gemini_path, gemini_nodes)
+    chat_links = _write_links(chat_path, chat_nodes)
     _write_b64(b64_path, ok_nodes)
 
     uci_lines = [
         "#!/bin/sh",
-        f"# OpenWrt Passwall 节点批量导入脚本（代理通 {len(ok_nodes)} 个，其中 Gemini 可用 {gemini_links} 个）",
+        f"# OpenWrt Passwall 节点批量导入脚本（代理通 {len(ok_nodes)} 个，其中 Gemini 可用 {gemini_links} 个、提问成功 {chat_links} 个）",
         f"# 生成时间: {now_text}",
         "# 用法: 上传至路由器后执行 sh " + config.EXPORT_UCI_FILE,
         "# 说明: 脚本仅新增节点, 不会删除已有配置",
@@ -204,18 +207,27 @@ def export_artifacts(
     )
     uci_path.write_text("\n".join(uci_lines), encoding="utf-8")
 
-    logger.info("导出完成：全部 %d / 代理通 %d / Gemini 可用 %d", total_links, ok_links, gemini_links)
+    logger.info(
+        "导出完成：全部 %d / 代理通 %d / Gemini 可用 %d / 提问成功 %d",
+        total_links,
+        ok_links,
+        gemini_links,
+        chat_links,
+    )
     return {
         "total": total_links,
         "available": ok_links,
         "gemini_available": gemini_links,
+        "gemini_chat": chat_links,
         "nodes": ok_nodes,
         "gemini_nodes": gemini_nodes,
+        "chat_nodes": chat_nodes,
         "paths": {
             "all": str(all_path),
             "ok": str(ok_path),
             "b64": str(b64_path),
             "gemini": str(gemini_path),
+            "gemini_chat": str(chat_path),
             "uci": str(uci_path),
         },
     }

@@ -3,7 +3,7 @@
 ====================================
 遵循《AI 编程规范》第 9 条：所有可调参数集中在本文件。
 
-- 敏感信息统一从 `.env` 读取（不入库、不硬编码）
+- 敏感信息统一从 `.env` 读取（不落盘、不硬编码）
 - 探针与连通性规则对齐 OpenWrt-Passwall
 - 临时文件统一存放 `.temp/`，文件名以 `temp_` 开头
 """
@@ -250,36 +250,10 @@ ENABLE_CORE_FALLBACK = env_bool("ENABLE_CORE_FALLBACK", True)
 # ---------------------------------------------------------------------------
 DEFAULT_WORKERS = env_int("DEFAULT_WORKERS", 10)
 MAX_WORKERS = env_int("MAX_WORKERS", 32)
-CONSOLE_WIDTH = env_int("CONSOLE_WIDTH", 118)
 
 # ---------------------------------------------------------------------------
-# 数据库（规范第 6、7 条）
+# IP 归属地（可选，用于展示节点落地信息）
 # ---------------------------------------------------------------------------
-DB_CONFIG: Dict[str, object] = {
-    "host": env_get("DB_HOST", "127.0.0.1"),
-    "port": env_int("DB_PORT", 3306),
-    "user": env_get("DB_USER", ""),
-    "password": env_get("DB_PASSWORD", ""),
-    "database": env_get("DB_DATABASE", ""),
-    "charset": env_get("DB_CHARSET", "utf8mb4"),
-    "connect_timeout": env_int("DB_CONNECT_TIMEOUT", 3),
-}
-DB_TABLE_PREFIX = "vpn_check"
-DB_ENABLED = env_bool("DB_ENABLED", True)
-IP_LOCATION_TABLE = env_get("IP_LOCATION_TABLE", "ip_address_location")
-
-# ---------------------------------------------------------------------------
-# 需求：IP 归属地（规范第 12 条）
-# ---------------------------------------------------------------------------
-IP_LOCATION_HELPER = env_get("IP_LOCATION_HELPER", "") or ""
-if not IP_LOCATION_HELPER:
-    # 兼容规范指定的同级 API 项目布局；不存在时使用内置 ipinfo 回源
-    try:
-        _helper_candidate = BASE_DIR.parents[1] / "API" / "check_ip_add" / "check_ip_add_only.py"
-    except IndexError:
-        _helper_candidate = None
-    if _helper_candidate is not None and _helper_candidate.exists():
-        IP_LOCATION_HELPER = str(_helper_candidate)
 IP_LOCATION_TIMEOUT = env_float("IP_LOCATION_TIMEOUT", 6.0)
 IPINFO_TOKEN = env_get("IPINFO_TOKEN", "")
 IPINFO_URL = env_get("IPINFO_URL", "https://ipinfo.io/{ip}/json")
@@ -291,6 +265,7 @@ EXPORT_OK_FILE = "passwall_nodes_ok.txt"
 EXPORT_ALL_FILE = "passwall_nodes_all.txt"
 EXPORT_B64_FILE = "passwall_nodes_ok_b64.txt"
 EXPORT_GEMINI_FILE = "passwall_nodes_gemini_ok.txt"
+EXPORT_GEMINI_CHAT_FILE = "passwall_nodes_gemini_chat_ok.txt"
 EXPORT_UCI_FILE = "passwall_uci_ok.txt"
 
 
@@ -313,8 +288,6 @@ def validate() -> List[ConfigIssue]:
         issues.append(ConfigIssue("PROBE_METHOD", "仅支持 HEAD 或 GET，将回退为 HEAD", False))
     if not Path(XRAY_PATH).exists() and not Path(SINGBOX_PATH).exists():
         issues.append(ConfigIssue("XRAY_BIN/SINGBOX_BIN", "未找到 xray 或 sing-box 内核二进制", True))
-    if DB_ENABLED and not (DB_CONFIG["user"] and DB_CONFIG["password"] and DB_CONFIG["database"]):
-        issues.append(ConfigIssue("DB_*", "数据库账号未配置，将跳过持久化（可在 .env 中设置 DB_USER/DB_PASSWORD/DB_DATABASE）", False))
     return issues
 
 

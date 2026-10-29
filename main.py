@@ -7,7 +7,7 @@
 2. 启动真实内核（Xray / Sing-box）逐节点建立 SOCKS5 隧道
 3. 按 Passwall 规则执行国际 / 国内探针分级，测试 Google / Gemini / Grok
 4. Gemini 免登录地区判定 + 可选的登录提问验证
-5. 输出终端决策看板、归档报告、导出 Passwall 配置并持久化 MySQL
+5. 输出终端决策看板、归档报告并导出 Passwall 配置
 """
 
 from __future__ import annotations
@@ -47,7 +47,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=config.DEFAULT_WORKERS, help="并发测试线程数")
     parser.add_argument("--skip-gemini", action="store_true", help="跳过 Gemini 深度检测")
     parser.add_argument("--skip-gemini-chat", action="store_true", help="Gemini 仅测访问，跳过登录提问")
-    parser.add_argument("--no-db", action="store_true", help="不写入 MySQL")
     parser.add_argument("--no-export", action="store_true", help="不导出 Passwall 配置")
     parser.add_argument("--ok-only", action="store_true", help="控制台仅展示总览与可用节点榜")
     parser.add_argument("--quiet", "-q", action="store_true", help="静默模式（适配 Cron 定时任务）")
@@ -110,16 +109,8 @@ def _run(args: argparse.Namespace) -> int:
         print("❌ 配置不完整，程序终止。请参考 .env.example 完善配置。")
         return 2
 
-    db_ready = False
-    if not args.no_db and config.DB_ENABLED:
-        from core import database
-
-        db_ready = database.init_database()
-        if not db_ready and not args.quiet:
-            print("  ⚠️  数据库不可用，本次将跳过持久化（不影响其余功能）")
-
     if not args.quiet:
-        print(f"\n📡 [1/4] 拉取订阅（共 {len(config.SUBSCRIBE_ITEMS)} 个订阅源）...")
+        print(f"\n📡 [1/3] 拉取订阅（共 {len(config.SUBSCRIBE_ITEMS)} 个订阅源）...")
     subscriptions = fetch_all(config.SUBSCRIBE_ITEMS)
     _print_subscription_results(subscriptions, args.quiet)
 
@@ -136,7 +127,7 @@ def _run(args: argparse.Namespace) -> int:
         return 1
 
     if not args.quiet:
-        print(f"\n🚀 [2/4] 启动内核隧道探测（{len(test_nodes)} 节点，{args.workers} 并发）...")
+        print(f"\n🚀 [2/3] 启动内核隧道探测（{len(test_nodes)} 节点，{args.workers} 并发）...")
         if not args.skip_gemini and not config.GEMINI_1PSID:
             print("  ℹ️  未配置 GEMINI_1PSID：执行免登录访问与地区封锁检测，跳过提问测试")
 
@@ -157,7 +148,7 @@ def _run(args: argparse.Namespace) -> int:
         print(f"  ⏱️  探测完成，总耗时 {elapsed} 秒")
 
     if not args.quiet:
-        print("\n📋 [3/4] 汇总测试报告 ...")
+        print("\n📋 [3/3] 汇总测试报告 ...")
     report_text = render_report(test_nodes, results, ok_only=args.ok_only)
     if not args.quiet:
         print(report_text)
@@ -175,24 +166,13 @@ def _run(args: argparse.Namespace) -> int:
         if not args.quiet:
             print(
                 f"  ✅ Passwall 导出完成：代理通 {export_result['available']} / "
-                f"Gemini 可用 {export_result['gemini_available']} / 总计 {export_result['total']}"
+                f"Gemini 可用 {export_result['gemini_available']} / "
+                f"提问成功 {export_result['gemini_chat']} / 总计 {export_result['total']}"
             )
             for key, path in export_result["paths"].items():
                 print(f"     -> {key}: {path}")
     elif not args.quiet:
         print("  ➖ 已跳过 Passwall 配置导出（--no-export）")
-
-    if db_ready:
-        from core import database
-
-        ok = database.persist_test_batch(test_nodes, results, elapsed_seconds=elapsed)
-        if not args.quiet:
-            marker = "🗄️ " if ok else "⚠️ "
-            print(f"  {marker}测试数据持久化: {'成功' if ok else '失败'}")
-    elif not args.no_db and config.DB_ENABLED and not args.quiet:
-        print("  ⚠️  数据库不可用，已跳过数据入库")
-    elif not args.quiet:
-        print("  ➖ 已跳过数据库持久化（--no-db）")
 
     print(f"\n✨ {format_summary(results)}")
     logger.info("巡检完成: %s", format_summary(results))

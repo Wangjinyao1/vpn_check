@@ -10,14 +10,15 @@ from __future__ import annotations
 import base64
 import json
 import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
 from core import config
 from core.engine import build_singbox_config, build_xray_config
-from core.exporter import _uci_node_block
+from core.exporter import _uci_node_block, export_artifacts
 from core.gemini import evaluate_region, extract_feature_flag, extract_region_code, extract_reply_text
-from core.models import ProxyNode
+from core.models import LEVEL_PROXY, GeminiVerdict, NodeResult, ProxyNode
 from core.parsers import dedupe_nodes, parse_node_link
 from core.subscription import parse_userinfo
 
@@ -260,6 +261,20 @@ class ExporterTests(unittest.TestCase):
         self.assertIn("uci set passwall.$sec.transport='raw'", block)
         self.assertIn("uci set passwall.$sec.reality='1'", block)
         self.assertIn("uci set passwall.$sec.reality_publicKey=", block)
+
+    def test_gemini_chat_export(self) -> None:
+        node = parse_node_link(VLESS_REALITY)
+        assert node is not None
+        result = NodeResult(node=node, level=LEVEL_PROXY)
+        result.gemini = GeminiVerdict(access_ok=True, chat_ok=True, region_code="JPN")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            stats = export_artifacts([node], [result], Path(tmp))
+            chat_file = Path(tmp) / config.EXPORT_GEMINI_CHAT_FILE
+            gemini_file = Path(tmp) / config.EXPORT_GEMINI_FILE
+            self.assertEqual(stats["gemini_chat"], 1)
+            self.assertIn(node.raw, chat_file.read_text(encoding="utf-8"))
+            self.assertIn(node.raw, gemini_file.read_text(encoding="utf-8"))
 
     def test_uci_quote_escapes_single_quote(self) -> None:
         node = ProxyNode(

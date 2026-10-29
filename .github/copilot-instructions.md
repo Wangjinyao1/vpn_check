@@ -13,10 +13,10 @@
 1. **文档**：每次改代码同步更新 `README.md`，并在「版本迭代」中递增版本（小改 +0.01 / 中改 +0.1 / 大改 +1）。
 2. **敏感信息**：只放 `.env`，不得硬编码；`.env` 必须被 `.gitignore` 忽略；仓库只保留脱敏的 `.env.example`。
 3. **临时文件**：统一放 `.temp/`，文件名以 `temp_` 开头，运行结束即清理。
-4. **数据库**：表名统一 `vpn_check_` 前缀，主键自增，必须包含 `created_at` / `updated_at` 与去重索引；DDL 字段必须有中文注释。
+4. **无数据库**：项目不引入 MySQL / Redis / SQLite 等外部存储，结果只写本地报告与 `export/`。
 5. **日志**：单文件 `run_log.log`，上限 3MB。
 6. **配置**：所有可调参数集中在 `core/config.py`，禁止散落魔法值。
-7. **IP 归属地**：优先读 `ip_address_location` 通用表；未命中时调用 `check_ip_add_only.py` 或 ipinfo 回源并写回（去重）。
+7. **IP 归属地**：进程内缓存 + ipinfo 回源，不再依赖任何本地数据库。
 8. **保密性**：禁止提交 `Project_Require.md`、`export/`、`bin/`、`run_log.log`、`test_results.txt`、`.vscode/`；提交前执行 README 中的保密性自查命令。
 
 ## 代码结构约定
@@ -30,7 +30,7 @@
 
 ```bash
 python -m unittest discover -s tests -v
-python main.py --limit 2 --skip-gemini-chat --no-db --no-export
+python main.py --limit 2 --skip-gemini-chat --no-export
 ```
 
 提交前确保：内核配置能被 `xray run -test` / `sing-box check` 验证通过，且工作区无敏感文件。

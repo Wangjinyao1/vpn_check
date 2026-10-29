@@ -3,7 +3,6 @@
 ==============================================
 - 多 UA / 多后端（urllib、curl_cffi 浏览器指纹、本地代理）容错拉取
 - 解析 `Subscription-Userinfo` 标头，换算节余流量与到期时间
-- 远端未返回流量信息时，回退继承数据库中的历史配额
 """
 
 from __future__ import annotations
@@ -164,8 +163,6 @@ def fetch_subscription(name: str, url: str) -> SubscriptionResult:
 
     remaining, expire = parse_userinfo(userinfo_raw)
     nodes = parse_subscription_text(content, name, url)
-    if not remaining:
-        remaining, expire = _inherit_quota(name)
 
     for node in nodes:
         node.remaining_traffic = remaining
@@ -179,19 +176,6 @@ def fetch_subscription(name: str, url: str) -> SubscriptionResult:
         result.error = "订阅内容中未解析到受支持的节点"
         logger.warning("[%s] %s", name, result.error)
     return result
-
-
-def _inherit_quota(sub_name: str) -> Tuple[str, str]:
-    """远端未返回配额时，继承数据库中该订阅最近一次的有效值"""
-    if not config.DB_ENABLED:
-        return "", ""
-    try:
-        from core import database
-
-        return database.lookup_subscription_quota(sub_name)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("继承订阅配额失败 (%s): %s", sub_name, exc)
-        return "", ""
 
 
 def fetch_all(items: Iterable[Dict[str, str]], workers: int = config.SUBSCRIBE_WORKERS) -> List[SubscriptionResult]:
