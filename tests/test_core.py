@@ -18,8 +18,10 @@ from core import config
 from core.engine import build_singbox_config, build_xray_config
 from core.exporter import _uci_node_block, export_artifacts
 from core.gemini import evaluate_region, extract_feature_flag, extract_region_code, extract_reply_text
-from core.models import LEVEL_PROXY, GeminiVerdict, NodeResult, ProxyNode
+from core.models import LEVEL_PROXY, GeminiVerdict, NodeResult, ProxyNode, SpeedResult
 from core.parsers import dedupe_nodes, parse_node_link
+from core.report import format_summary, render_report
+from core.speedtest import _format_url, format_speed, mbps, parse_ookla_output
 from core.subscription import parse_userinfo
 
 
@@ -289,6 +291,71 @@ class ExporterTests(unittest.TestCase):
         )
         block = "\n".join(_uci_node_block(node, 1))
         self.assertIn("'\\''", block)
+
+
+class SpeedTestTests(unittest.TestCase):
+    def test_mbps_conversion(self) -> None:
+        self.assertEqual(mbps(1_000_000, 1.0), 8.0)
+        self.assertEqual(mbps(2_500_000, 2.0), 10.0)
+        self.assertEqual(mbps(0, 1.0), 0.0)
+        self.assertEqual(mbps(1024, 0), 0.0)
+
+    def test_format_speed(self) -> None:
+        self.assertEqual(format_speed(0), "-")
+        self.assertEqual(format_speed(8.234), "8.23 Mbps")
+        self.assertEqual(format_speed(45.6), "45.6 Mbps")
+        self.assertEqual(format_speed(123.4), "123 Mbps")
+
+    def test_url_template(self) -> None:
+        self.assertEqual(_format_url("https://speed.test/down?bytes={bytes}", 42), "https://speed.test/down?bytes=42")
+        self.assertEqual(_format_url("https://speed.test/down", 42), "https://speed.test/down")
+
+    def test_default_speed_url_uses_bytes_placeholder(self) -> None:
+        self.assertTrue(any("{bytes}" in url for url in config.SPEEDTEST_URLS))
+
+    def test_speed_result(self) -> None:
+        self.assertFalse(SpeedResult().ok)
+        node = parse_node_link(VLESS_REALITY)
+        assert node is not None
+        result = NodeResult(node=node, level=LEVEL_PROXY)
+        self.assertEqual(result.speed_mbps, 0.0)
+        result.speed = SpeedResult(download_mbps=42.5, downloaded_bytes=10_000_000)
+        self.assertEqual(result.speed_mbps, 42.5)
+        self.assertTrue(result.speed.ok)
+
+    def test_parse_ookla_output(self) -> None:
+        payload = {
+            "type": "result",
+            "ping": {"jitter": 0.42, "latency": 18.5, "low": 17, "high": 22},
+            "download": {"bandwidth": 12_500_000, "bytes": 125_000_000, "elapsed": 10_000},
+            "upload": {"bandwidth": 3_750_000, "bytes": 37_500_000, "elapsed": 10_000},
+            "server": {"name": "Test Server", "location": "Tokyo", "country": "Japan"},
+            "result": {"url": "https://www.speedtest.net/result/c/abc"},
+        }
+        result = parse_ookla_output(json.dumps(payload))
+        self.assertEqual(result.provider, "ookla")
+        self.assertEqual(result.download_mbps, 100.0)
+        self.assertEqual(result.upload_mbps, 30.0)
+        self.assertEqual(result.ping_ms, 18.5)
+        self.assertEqual(result.jitter_ms, 0.42)
+        self.assertEqual(result.server, "Test Server (Tokyo)")
+        self.assertTrue(result.ok)
+
+    def test_parse_ookla_output_invalid(self) -> None:
+        with self.assertRaises(ValueError):
+            parse_ookla_output('{"type": "log"}')
+        with self.assertRaises(ValueError):
+            parse_ookla_output("not-json")
+
+    def test_report_renders_speed(self) -> None:
+        node = parse_node_link(VLESS_REALITY)
+        assert node is not None
+        result = NodeResult(node=node, level=LEVEL_PROXY, latency_ms=88.0)
+        result.speed = SpeedResult(download_mbps=42.5, downloaded_bytes=10_000_000)
+        text = render_report([node], [result])
+        self.assertIn("测 速 排 行 榜", text)
+        self.assertIn("42.5 Mbps", text)
+        self.assertIn("平均下载 42.5 Mbps", format_summary([result]))
 
 
 @unittest.skipUnless(Path(config.XRAY_PATH).exists(), "xray 二进制不存在")

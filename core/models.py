@@ -157,6 +157,7 @@ class GeminiVerdict:
     api_reach_ok: bool = False          # Generative Language API 连通性
     feature_flag: Optional[bool] = None  # 45631641 特性开关原始值
     chat_ok: Optional[bool] = None      # 提问：True/False/None(未测)
+    cookie_invalid: bool = False        # Cookie 已失效（与节点质量无关，避免误杀节点）
     chat_code: int = 0
     chat_ms: float = 0.0
     reply_snippet: str = ""
@@ -169,11 +170,55 @@ class GeminiVerdict:
 
     @property
     def chat_tag(self) -> str:
+        if self.cookie_invalid:
+            return "🍪 Cookie失效"
         if self.chat_ok is True:
             return "✅ 回答成功"
         if self.chat_ok is False:
             return "⚠️ 提问受阻"
         return "➖ 未测"
+
+
+@dataclass
+class SpeedResult:
+    """单节点测速结果（吞吐单位 Mbps，时延单位 ms）
+
+    指标对齐 Speedtest CLI：ping / jitter / download / upload，
+    provider 记录实际生效的测速引擎（ookla / builtin）。
+    """
+
+    download_mbps: float = 0.0
+    upload_mbps: float = 0.0
+    downloaded_bytes: int = 0
+    uploaded_bytes: int = 0
+    download_ms: float = 0.0
+    upload_ms: float = 0.0
+    ping_ms: float = 0.0
+    jitter_ms: float = 0.0
+    provider: str = ""
+    server: str = ""
+    url: str = ""
+    error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return self.download_mbps > 0 and not self.error
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "download_mbps": self.download_mbps,
+            "upload_mbps": self.upload_mbps,
+            "downloaded_bytes": self.downloaded_bytes,
+            "uploaded_bytes": self.uploaded_bytes,
+            "download_ms": self.download_ms,
+            "upload_ms": self.upload_ms,
+            "ping_ms": self.ping_ms,
+            "jitter_ms": self.jitter_ms,
+            "provider": self.provider,
+            "server": self.server,
+            "url": self.url,
+            "error": self.error,
+        }
 
 
 @dataclass
@@ -190,6 +235,7 @@ class NodeResult:
     sites: Dict[str, SiteProbe] = field(default_factory=dict)
     probes: Dict[str, SiteProbe] = field(default_factory=dict)
     gemini: Optional[GeminiVerdict] = None
+    speed: Optional[SpeedResult] = None
     fail_code: str = ""
     fail_reason: str = ""
     kernel_error: str = ""
@@ -209,6 +255,10 @@ class NodeResult:
     @property
     def gemini_chat_ok(self) -> bool:
         return bool(self.gemini and self.gemini.chat_ok is True)
+
+    @property
+    def speed_mbps(self) -> float:
+        return self.speed.download_mbps if self.speed else 0.0
 
     def site_ok(self, name: str) -> bool:
         probe = self.sites.get(name)

@@ -254,6 +254,12 @@ def _singbox_tls(node: ProxyNode) -> Optional[dict]:
         "server_name": node.sni or node.host or node.address,
         "insecure": node.allow_insecure,
     }
+    # Hysteria2 证书指纹：机场下发的 pcs/pin_sha256 是「证书哈希」，而 sing-box 只支持
+    # 「公钥哈希」(certificate_public_key_sha256)，两者无法互算。直接下发会导致
+    # "unrecognized remote public key" 而必然失败，因此改为跳过证书校验的降级策略。
+    if node.protocol == "hysteria2" and node.params.get("pin_sha256") and config.HYSTERIA2_PIN_INSECURE:
+        tls["insecure"] = True
+        logger.debug("[%s] 检测到证书指纹，sing-box 无法校验证书哈希，降级为 insecure", node.name)
     if node.params.get("alpn"):
         tls["alpn"] = [item for item in node.params["alpn"].split(",") if item]
     if node.params.get("fp"):

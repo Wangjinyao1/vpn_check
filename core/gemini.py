@@ -261,6 +261,27 @@ def check_gemini(socks_port: int, do_chat: bool = True) -> GeminiVerdict:
     verdict.region_code = extract_region_code(html)
     verdict.feature_flag = extract_feature_flag(html)
 
+    # Cookie 失效不等于节点不可用：降级为免登录判定，仅标记提问不可用
+    if cookies and "accounts.google.com" in final_url:
+        verdict.cookie_invalid = True
+        logger.warning("Gemini Cookie 已失效，降级为免登录地区判定")
+        try:
+            if session is not None:
+                page = session.get(
+                    config.GEMINI_APP_URL,
+                    headers=BROWSER_HEADERS,
+                    timeout=config.SITE_TIMEOUT,
+                    impersonate="chrome120",
+                )
+                html = page.text or ""
+                verdict.http_code = page.status_code
+                verdict.access_ms = round(page.elapsed.total_seconds() * 1000, 1)
+                final_url = str(page.url).lower()
+                verdict.region_code = extract_region_code(html)
+                verdict.feature_flag = extract_feature_flag(html)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("免登录重试失败: %s", exc)
+
     if verdict.region_code in config.GEMINI_BLOCKED_REGIONS:
         verdict.gemini_status = "blocked"
         verdict.region_blocked = True
@@ -320,6 +341,10 @@ def check_gemini(socks_port: int, do_chat: bool = True) -> GeminiVerdict:
         verdict.chat_ok = None
         verdict.error = "未配置 GEMINI_1PSID，跳过提问测试"
         return verdict
+    if verdict.cookie_invalid:
+        verdict.chat_ok = None
+        verdict.error = "Cookie 已失效，跳过提问测试（请更新 GEMINI_1PSID / GEMINI_1PSIDTS）"
+        return verdict
     if session is None:
         verdict.chat_ok = None
         verdict.error = "缺少 curl_cffi，无法执行登录提问"
@@ -333,7 +358,8 @@ def _chat_test(session, html: str, cookies: dict, verdict: GeminiVerdict) -> Gem
     at_token, bl_version = _extract_session_tokens(html)
     if not at_token:
         verdict.chat_ok = False
-        verdict.error = "未提取到 SNlM0e 会话令牌，请刷新 Cookie"
+        verdict.cookie_invalid = True
+        verdict.error = "未提取到 SNlM0e 会话令牌，Cookie 可能已失效，请重新获取"
         return verdict
 
     form_data = {"at": at_token, "f.req": _build_chat_payload(config.GEMINI_CHAT_QUESTION)}

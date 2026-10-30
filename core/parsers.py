@@ -499,3 +499,132 @@ def dedupe_nodes(nodes: List[ProxyNode]) -> List[ProxyNode]:
         seen.add(fp)
         unique.append(node)
     return unique
+
+
+# ---------------------------------------------------------------------------
+# 反向生成分享链接（Clash YAML / 订阅解析结果导出 Passwall 时必需）
+# ---------------------------------------------------------------------------
+def _host_port(node: ProxyNode) -> str:
+    address = node.address
+    if ":" in address and not address.startswith("["):
+        address = f"[{address}]"
+    return f"{address}:{node.port}"
+
+
+def _query_string(items: Dict[str, str]) -> str:
+    pairs = [(key, value) for key, value in items.items() if value not in ("", None)]
+    return urllib.parse.urlencode(pairs) if pairs else ""
+
+
+def build_share_link(node: ProxyNode) -> str:
+    """由归一化模型反向生成分享链接，保证 Clash 来源的节点也能被导出"""
+    if node.raw:
+        return node.raw
+    params = node.params
+    network = node.network
+    name = urllib.parse.quote(node.name or f"{node.protocol}_{node.address}_{node.port}", safe="")
+    auth = urllib.parse.quote(node.uuid, safe="")
+
+    if node.protocol == "vless":
+        query: Dict[str, str] = {
+            "type": network,
+            "security": node.security or "none",
+            "encryption": params.get("encryption") or "none",
+            "sni": node.sni,
+            "flow": params.get("flow", ""),
+            "fp": params.get("fp", ""),
+            "alpn": params.get("alpn", ""),
+            "pbk": params.get("pbk", ""),
+            "sid": params.get("sid", ""),
+            "spx": params.get("spx", "") if params.get("pbk") else "",
+            "allowInsecure": "1" if node.allow_insecure else "",
+        }
+        if network in ("ws", "httpupgrade", "xhttp", "http"):
+            query["host"] = node.host
+            query["path"] = node.path
+            query["mode"] = params.get("mode", "")
+        elif network == "grpc":
+            query["serviceName"] = node.service_name
+        elif network == "tcp" and params.get("header_type") == "http":
+            query["headerType"] = "http"
+            query["host"] = node.host
+            query["path"] = node.path
+        return f"vless://{auth}@{_host_port(node)}?{_query_string(query)}#{name}"
+
+    if node.protocol == "vmess":
+        payload = {
+            "v": "2",
+            "ps": node.name,
+            "add": node.address,
+            "port": str(node.port),
+            "id": node.uuid,
+            "aid": str(params.get("alter_id") or "0"),
+            "scy": params.get("scy") or "auto",
+            "net": network,
+            "type": params.get("header_type") or "none",
+            "host": node.host,
+            "path": node.path,
+            "tls": "tls" if node.tls else "",
+            "sni": node.sni,
+            "alpn": params.get("alpn", ""),
+            "fp": params.get("fp", ""),
+        }
+        encoded = base64.b64encode(json.dumps(payload, ensure_ascii=False).encode("utf-8")).decode("ascii")
+        return f"vmess://{encoded}"
+
+    if node.protocol == "trojan":
+        query = {
+            "security": node.security or "tls",
+            "sni": node.sni,
+            "type": network,
+            "fp": params.get("fp", ""),
+            "alpn": params.get("alpn", ""),
+            "allowInsecure": "1" if node.allow_insecure else "",
+        }
+        if network == "ws":
+            query["host"] = node.host
+            query["path"] = node.path
+        elif network == "grpc":
+            query["serviceName"] = node.service_name
+        return f"trojan://{auth}@{_host_port(node)}?{_query_string(query)}#{name}"
+
+    if node.protocol == "shadowsocks":
+        user_info = base64.b64encode(
+            f"{params.get('method') or 'aes-256-gcm'}:{node.uuid}".encode("utf-8")
+        ).decode("ascii")
+        query = {}
+        if params.get("plugin"):
+            plugin = params["plugin"]
+            opts = params.get("plugin_opts", "")
+            query["plugin"] = f"{plugin};{opts}" if opts else plugin
+        if node.allow_insecure:
+            query["allowInsecure"] = "1"
+        suffix = f"?{_query_string(query)}" if query else ""
+        return f"ss://{user_info}@{_host_port(node)}{suffix}#{name}"
+
+    if node.protocol == "hysteria2":
+        query = {
+            "sni": node.sni,
+            "obfs": params.get("obfs", ""),
+            "obfs-password": params.get("obfs_password", ""),
+            "upmbps": params.get("up_mbps", ""),
+            "downmbps": params.get("down_mbps", ""),
+            "mport": params.get("ports", ""),
+            "hopinterval": params.get("hop_interval", ""),
+            "pcs": params.get("pin_sha256", ""),
+            "insecure": "1" if node.allow_insecure else "",
+        }
+        return f"hysteria2://{auth}@{_host_port(node)}?{_query_string(query)}#{name}"
+
+    if node.protocol == "anytls":
+        query = {
+            "sni": node.sni,
+            "fp": params.get("fp", ""),
+            "alpn": params.get("alpn", ""),
+            "pbk": params.get("pbk", ""),
+            "sid": params.get("sid", ""),
+            "insecure": "1" if node.allow_insecure else "",
+        }
+        return f"anytls://{auth}@{_host_port(node)}?{_query_string(query)}#{name}"
+
+    return ""

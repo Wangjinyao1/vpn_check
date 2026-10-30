@@ -5,7 +5,7 @@
 # 功能：
 #   1. 安装 Python / Git / 解压等系统依赖
 #   2. 创建虚拟环境并安装 requirements.txt
-#   3. 下载 Linux 版 Xray-core 与 Sing-box 内核到 bin/
+#   3. 下载 Linux 版 Xray-core、Sing-box 内核与 Ookla Speedtest CLI 到 bin/
 #   4. 生成 .env（若不存在）并收紧权限
 #   5. 安装 systemd 服务与定时器（默认每 2 小时巡检一次）
 #
@@ -19,6 +19,7 @@
 #   REPO_URL        项目仓库地址（默认本仓库，作用于自动克隆）
 #   GH_PROXY        GitHub 加速前缀（如 https://ghproxy.net/），作用于 clone 与内核下载
 #   SINGBOX_VERSION Sing-box 版本标签（默认取最新，失败回退 v1.13.16）
+#   SPEEDTEST_CLI   设为 0 可跳过 Ookla Speedtest CLI 下载（默认下载到 bin/speedtest）
 # ==============================================================================
 
 set -euo pipefail
@@ -234,6 +235,25 @@ if [[ ! -x bin/sing-box ]]; then
 fi
 
 [[ -x bin/xray || -x bin/sing-box ]] || fail "未获得任何代理内核：请检查网络（可设置 GH_PROXY），或手动把 Linux 内核放入 $PROJECT_DIR/bin/"
+
+# ---------- Ookla Speedtest CLI（节点测速） ----------
+if [[ "${SPEEDTEST_CLI:-1}" != "0" && ! -x bin/speedtest ]]; then
+    ST_ARCH=""
+    case "$ARCH" in
+        x86_64|amd64) ST_ARCH="x86_64" ;;
+        aarch64|arm64) ST_ARCH="aarch64" ;;
+    esac
+    ST_URL="https://install.speedtest.net/app/cli/ookla-speedtest-1.2.0-linux-${ST_ARCH}.tgz"
+    log "下载 Ookla Speedtest CLI ($ST_ARCH) ..."
+    if curl -fsSL --http1.1 --connect-timeout 15 --retry 2 --retry-delay 1 -o "$TMP_DIR/speedtest.tgz" "$ST_URL" \
+        && tar -xzf "$TMP_DIR/speedtest.tgz" -C "$TMP_DIR" speedtest \
+        && [[ -f "$TMP_DIR/speedtest" ]]; then
+        install -m 0755 "$TMP_DIR/speedtest" bin/speedtest
+        log "  已安装 bin/speedtest（测速引擎将使用 Ookla Speedtest CLI）"
+    else
+        warn "Speedtest CLI 下载失败，将回退内置测速（可稍后手动放入 bin/speedtest）"
+    fi
+fi
 
 # ---------- 配置文件 ----------
 if [[ ! -f .env ]]; then

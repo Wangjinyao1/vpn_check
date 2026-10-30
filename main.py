@@ -6,13 +6,15 @@
 1. 并发拉取 `.env` 中配置的全部机场订阅，解析并跨订阅去重
 2. 启动真实内核（Xray / Sing-box）逐节点建立 SOCKS5 隧道
 3. 按 Passwall 规则执行国际 / 国内探针分级，测试 Google / Gemini / Grok
-4. Gemini 免登录地区判定 + 可选的登录提问验证
-5. 输出终端决策看板、归档报告并导出 Passwall 配置
+4. 对代理通节点做定量下载测速（可选上传），生成测速排行榜
+5. Gemini 免登录地区判定 + 可选的登录提问验证
+6. 输出终端决策看板、归档报告并导出 Passwall 配置
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import sys
 import time
@@ -20,10 +22,11 @@ from pathlib import Path
 from typing import List, Optional, Sequence
 
 from core import __version__, config
-from core.checker import run_pipeline
+from core.checker import run_pipeline, run_speed_phase
 from core.logging_setup import setup_logging
 from core.models import SubscriptionResult
-from core.report import format_progress, format_summary, render_report
+from core.report import build_json, format_progress, format_summary, render_report
+from core.speedtest import format_speed, resolved_provider
 from core.subscription import collect_nodes, fetch_all
 
 # Windows 控制台编码保护
@@ -47,6 +50,29 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=config.DEFAULT_WORKERS, help="并发测试线程数")
     parser.add_argument("--skip-gemini", action="store_true", help="跳过 Gemini 深度检测")
     parser.add_argument("--skip-gemini-chat", action="store_true", help="Gemini 仅测访问，跳过登录提问")
+    parser.add_argument("--skip-speed", action="store_true", help="跳过节点下载测速")
+    parser.add_argument(
+        "--speed-workers",
+        type=int,
+        default=config.SPEEDTEST_WORKERS,
+        help="测速并发度（1 = 数据最可比，默认 %(default)s）",
+    )
+    parser.add_argument(
+        "--speed-top",
+        type=int,
+        default=config.SPEEDTEST_TOP,
+        help="仅对延迟最低的前 N 个代理通节点测速（0 = 全部）",
+    )
+    parser.add_argument(
+        "--speed-provider",
+        choices=("auto", "ookla", "builtin"),
+        default=None,
+        help="测速引擎，默认取 .env 的 SPEEDTEST_PROVIDER（内置采样）",
+    )
+    parser.add_argument("--json", action="store_true", help="额外输出结构化 JSON 报告")
+    parser.add_argument(
+        "--json-file", type=str, default=str(config.JSON_FILE), help="JSON 报告路径"
+    )
     parser.add_argument("--no-export", action="store_true", help="不导出 Passwall 配置")
     parser.add_argument("--ok-only", action="store_true", help="控制台仅展示总览与可用节点榜")
     parser.add_argument("--quiet", "-q", action="store_true", help="静默模式（适配 Cron 定时任务）")
@@ -98,6 +124,11 @@ def _run(args: argparse.Namespace) -> int:
     setup_logging()
     config.ensure_directories()
 
+    if args.speed_provider:
+        config.SPEEDTEST_PROVIDER = args.speed_provider
+    if args.speed_workers < 1:
+        args.speed_workers = 1
+
     issues = config.validate()
     fatal = [issue for issue in issues if issue.fatal]
     if not args.quiet:
@@ -127,9 +158,12 @@ def _run(args: argparse.Namespace) -> int:
         return 1
 
     if not args.quiet:
-        print(f"\n🚀 [2/3] 启动内核隧道探测（{len(test_nodes)} 节点，{args.workers} 并发）...")
+        print(f"\n🚀 [2/4] 启动内核隧道探测（{len(test_nodes)} 节点，{args.workers} 并发）...")
         if not args.skip_gemini and not config.GEMINI_1PSID:
             print("  ℹ️  未配置 GEMINI_1PSID：执行免登录访问与地区封锁检测，跳过提问测试")
+        if not args.skip_speed and config.SPEEDTEST_ENABLED:
+            engine = "Ookla Speedtest CLI" if resolved_provider() == "ookla" else "内置 SOCKS5 采样"
+            print(f"  ⚡ 测速引擎: {engine}（下载 {config.SPEEDTEST_DOWNLOAD_BYTES // 1024 // 1024} MB 采样）")
 
     def on_progress(done: int, total: int, result) -> None:
         if not args.quiet:
@@ -147,8 +181,32 @@ def _run(args: argparse.Namespace) -> int:
     if not args.quiet:
         print(f"  ⏱️  探测完成，总耗时 {elapsed} 秒")
 
+    # 独立测速阶段：与探测线程池解耦，避免多节点同时抢同一条出口带宽
+    if not args.skip_speed and config.SPEEDTEST_ENABLED:
+        if not args.quiet:
+            print(f"\n⚡ [3/4] 节点测速（并发 {args.speed_workers}，数字横向比较请用 --speed-workers 1）...")
+
+        def on_speed(done: int, total: int, result) -> None:
+            if args.quiet:
+                return
+            speed = result.speed
+            text = format_speed(speed.download_mbps) if speed else "-"
+            print(f"  ⚡ [{done:>3}/{total:>3}] {result.node.name[:30]:<32} ↓{text}", flush=True)
+
+        measured = run_speed_phase(
+            results,
+            workers=args.speed_workers,
+            top=args.speed_top,
+            upload=config.SPEEDTEST_UPLOAD_ENABLED,
+            callback=on_speed,
+        )
+        if not args.quiet:
+            print(f"  ⏱️  测速完成 {measured} 个节点，累计耗时 {round(time.time() - started, 1)} 秒")
+    elif not args.quiet:
+        print("\n➖ 已跳过节点测速")
+
     if not args.quiet:
-        print("\n📋 [3/3] 汇总测试报告 ...")
+        print("\n📋 [4/4] 汇总测试报告 ...")
     report_text = render_report(test_nodes, results, ok_only=args.ok_only)
     if not args.quiet:
         print(report_text)
@@ -158,6 +216,25 @@ def _run(args: argparse.Namespace) -> int:
     report_path.write_text(report_text, encoding="utf-8")
     if not args.quiet:
         print(f"\n📄 完整报告已归档: {report_path}")
+
+    if args.json:
+        json_path = Path(args.json_file)
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = build_json(
+            test_nodes,
+            results,
+            meta={
+                "version": __version__,
+                "workers": args.workers,
+                "speed_workers": args.speed_workers,
+                "speed_provider": resolved_provider(),
+                "speed_enabled": not args.skip_speed and config.SPEEDTEST_ENABLED,
+                "gemini_chat": not args.skip_gemini and not args.skip_gemini_chat,
+            },
+        )
+        json_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        if not args.quiet:
+            print(f"  🧾 JSON 报告: {json_path}")
 
     if not args.no_export:
         from core import exporter
@@ -171,6 +248,11 @@ def _run(args: argparse.Namespace) -> int:
             )
             for key, path in export_result["paths"].items():
                 print(f"     -> {key}: {path}")
+            warnings = export_result.get("warnings") or {}
+            if warnings:
+                print(f"  ⚠️  字段体检: {len(warnings)} 个节点存在缺失字段，导入路由器后可能不生效")
+                for name, issues in list(warnings.items())[:5]:
+                    print(f"     ! {name}: {'；'.join(issues)}")
     elif not args.quiet:
         print("  ➖ 已跳过 Passwall 配置导出（--no-export）")
 

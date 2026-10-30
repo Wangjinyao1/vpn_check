@@ -9,17 +9,23 @@ from __future__ import annotations
 
 import logging
 import re
+import socket
 import ssl
 import time
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from core import config
+from core.clash import looks_like_clash_yaml, parse_clash_yaml
 from core.models import ProxyNode, SubscriptionResult
-from core.parsers import parse_subscription_text
+from core.parsers import is_placeholder, parse_subscription_text
 
 logger = logging.getLogger("vpn_check.subscription")
+
+# 本地代理可用性缓存：同一进程内只探活一次，避免每次拉取都白等 2 秒
+_PROXY_ALIVE: Dict[str, bool] = {}
 
 
 def _format_bytes(size: float) -> str:
@@ -90,6 +96,38 @@ def _fetch_curl(url: str, timeout: float, proxy: Optional[str] = None) -> Tuple[
     return response.content, response.headers.get("Subscription-Userinfo", "") or ""
 
 
+def _proxy_endpoint(proxy: str) -> Optional[Tuple[str, int]]:
+    """从代理 URL 拆出 (host, port)，用于拉取前的 TCP 探活"""
+    try:
+        parsed = urllib.parse.urlsplit(proxy if "://" in proxy else f"http://{proxy}")
+    except ValueError:
+        return None
+    host = parsed.hostname
+    if not host:
+        return None
+    default_port = 1080 if (parsed.scheme or "").startswith("socks") else 8080
+    return host, parsed.port or default_port
+
+
+def _proxy_alive(proxy: str, timeout: float = 0.8) -> bool:
+    """本地代理是否真的在监听——不通的直接跳过，避免每次空等超时"""
+    cached = _PROXY_ALIVE.get(proxy)
+    if cached is not None:
+        return cached
+    endpoint = _proxy_endpoint(proxy)
+    alive = False
+    if endpoint:
+        try:
+            with socket.create_connection(endpoint, timeout=timeout):
+                alive = True
+        except OSError:
+            alive = False
+    _PROXY_ALIVE[proxy] = alive
+    if not alive:
+        logger.debug("本地代理不可用，跳过: %s", proxy)
+    return alive
+
+
 def _download(url: str) -> Tuple[str, str]:
     """多策略拉取订阅正文，返回 (文本内容, Userinfo 标头)"""
     errors: List[str] = []
@@ -113,6 +151,8 @@ def _download(url: str) -> Tuple[str, str]:
         errors.append(f"curl_cffi: {exc}")
 
     for proxy in config.SUBSCRIPTION_PROXIES:
+        if not _proxy_alive(proxy):
+            continue
         try:
             payload, userinfo = _fetch_curl(url, min(config.SUBSCRIBE_TIMEOUT, 8.0), proxy)
             return payload.decode("utf-8", errors="replace"), userinfo
@@ -122,9 +162,32 @@ def _download(url: str) -> Tuple[str, str]:
     raise RuntimeError("; ".join(errors[-3:]) or "订阅响应为空")
 
 
+def _uri_list_variant(url: str) -> str:
+    """追加 flag=passwall 参数，请求机场返回 Passwall 可用的 URI 列表"""
+    if "flag=passwall" in url:
+        return ""
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}flag=passwall"
+
+
+def _try_uri_list(url: str) -> Optional[Tuple[str, str]]:
+    """Clash YAML 订阅的第二方案：带 flag=passwall 重新拉取 URI 列表"""
+    variant = _uri_list_variant(url)
+    if not variant:
+        return None
+    try:
+        content, userinfo = _download(variant)
+    except Exception as exc:  # noqa: BLE001 - 机场不支持该参数时静默回退
+        logger.debug("flag=passwall 拉取失败: %s", _sanitize_error(exc, url))
+        return None
+    if not content.strip() or looks_like_clash_yaml(content) or content.lstrip().startswith("<"):
+        return None
+    return content, userinfo
+
+
 def _looks_like_clash_yaml(text: str) -> bool:
-    head = text.lstrip()[:400].lower()
-    return head.startswith("port:") or "\nproxies:" in head or head.startswith("proxies:")
+    """兼容旧调用点"""
+    return looks_like_clash_yaml(text)
 
 
 def _sanitize_error(message: str, url: str) -> str:
@@ -150,10 +213,26 @@ def fetch_subscription(name: str, url: str) -> SubscriptionResult:
         return result
 
     if _looks_like_clash_yaml(content):
-        result.error = "订阅返回 Clash YAML，非 Passwall 可用的 URI 列表"
-        result.elapsed_s = round(time.time() - started, 2)
-        logger.warning("[%s] %s", name, result.error)
-        return result
+        retry = _try_uri_list(url)
+        if retry:
+            content, userinfo_raw = retry
+            logger.info("[%s] 订阅为 Clash YAML，已改用 flag=passwall 获取 URI 列表", name)
+        else:
+            nodes = [node for node in parse_clash_yaml(content, name, url) if not is_placeholder(node.name)]
+            remaining, expire = parse_userinfo(userinfo_raw)
+            for node in nodes:
+                node.remaining_traffic = remaining
+                node.expire_time = expire
+            result.nodes = nodes
+            result.remaining_traffic = remaining
+            result.expire_time = expire
+            result.elapsed_s = round(time.time() - started, 2)
+            if not nodes:
+                result.error = "订阅返回 Clash YAML，但未解析出受支持的节点"
+                logger.warning("[%s] %s", name, result.error)
+            else:
+                logger.info("[%s] Clash YAML 解析成功：%d 个节点", name, len(nodes))
+            return result
 
     if content.lstrip().startswith("<"):
         result.error = "订阅返回 HTML 页面（订阅可能已失效，或需要通过代理拉取）"

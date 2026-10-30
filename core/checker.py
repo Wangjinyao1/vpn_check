@@ -10,6 +10,7 @@
 代理通节点继续执行：
 - 三网页探测（Google / Gemini / Grok）
 - 出海落地 IP 与归属地识别
+- 节点吞吐测速（下载，可选上传）
 - Gemini 免登录地区封锁 + 登录提问验证
 """
 
@@ -34,8 +35,10 @@ from core.models import (
     NodeResult,
     ProxyNode,
     SiteProbe,
+    SpeedResult,
 )
 from core.netprobe import fetch_egress_ip, fetch_via_socks
+from core.speedtest import measure_speed
 
 logger = logging.getLogger("vpn_check.checker")
 
@@ -127,8 +130,13 @@ def _classify_failure(error: str) -> str:
     return "UNREACHABLE"
 
 
-def _evaluate(node: ProxyNode, tunnel: KernelTunnel, check_gemini_flag: bool, do_chat: bool) -> NodeResult:
-    """在已就绪的隧道上执行完整评估"""
+def _evaluate(
+    node: ProxyNode,
+    tunnel: KernelTunnel,
+    check_gemini_flag: bool,
+    do_chat: bool,
+) -> NodeResult:
+    """在已就绪的隧道上执行完整评估（测速已移出本函数，见 run_speed_phase）"""
     result = NodeResult(node=node, core=tunnel.core)
 
     proxy_ok, latency_ms = _probe_international(tunnel, result)
@@ -170,10 +178,16 @@ def _evaluate(node: ProxyNode, tunnel: KernelTunnel, check_gemini_flag: bool, do
     primary_error = errors[0] if errors else "全部探针不可达"
     result.fail_code = _classify_failure(primary_error)
     result.fail_reason = primary_error[:200]
+    if node.protocol == "hysteria2":
+        result.fail_reason = f"{result.fail_reason}（Hysteria2 走 UDP：若本地或上游封禁 UDP，内核可启动但无法建连）"[:260]
     return result
 
 
-def test_single_node(node: ProxyNode, check_gemini_flag: bool = True, do_chat_flag: bool = True) -> NodeResult:
+def test_single_node(
+    node: ProxyNode,
+    check_gemini_flag: bool = True,
+    do_chat_flag: bool = True,
+) -> NodeResult:
     """测试单个节点（全生命周期异常保护，永不中断全量巡检）"""
     cores = select_cores(node)
     if not cores:
@@ -256,3 +270,74 @@ def run_pipeline(
 
     logger.info("探测完成：%d 个节点，耗时 %.1f 秒", len(nodes), time.time() - started)
     return [results[node.fingerprint] for node in nodes if node.fingerprint in results]
+
+
+# ---------------------------------------------------------------------------
+# 独立测速阶段
+# ---------------------------------------------------------------------------
+def measure_node_speed(node: ProxyNode, upload: bool = False) -> SpeedResult:
+    """重建隧道后测速（探测阶段结束即销毁隧道，测速必须独立建连）"""
+    cores = select_cores(node)
+    if not cores:
+        return SpeedResult(error="未找到可用内核，无法测速")
+
+    last_error = ""
+    for core in cores:
+        tunnel = KernelTunnel(node, core)
+        if not tunnel.start():
+            last_error = tunnel.last_error
+            continue
+        try:
+            result = measure_speed(tunnel.port, upload=upload)
+            if result.download_mbps < config.SPEEDTEST_RETRY_FLOOR:
+                # 极低速多为采样异常（镜像限速 / 瞬时抖动），重测一次取较好值
+                retry = measure_speed(tunnel.port, upload=upload)
+                if retry.download_mbps > result.download_mbps:
+                    retry.error = ""
+                    result = retry
+            return result
+        except Exception as exc:  # noqa: BLE001 - 测速失败不影响节点主判定
+            last_error = f"{type(exc).__name__}: {exc}"
+            logger.warning("[%s] 测速异常: %s", node.name, exc)
+        finally:
+            tunnel.stop()
+    return SpeedResult(error=f"测速隧道建立失败: {last_error[:120]}")
+
+
+def run_speed_phase(
+    results: List[NodeResult],
+    workers: Optional[int] = None,
+    top: int = 0,
+    upload: bool = False,
+    callback: Optional[ProgressCallback] = None,
+) -> int:
+    """独立测速阶段：只对代理通节点测速，并发度可控以保证数字横向可比
+
+    并发越高，多个节点越会争抢同一条本机出口带宽，测出的 Mbps 会相互压低。
+    需要最终定榜时用 `workers=1`；日常巡检用默认 2 即可。
+    """
+    candidates = [result for result in results if result.is_proxy_ok]
+    if top and top > 0:
+        candidates = sorted(candidates, key=lambda item: item.latency_ms)[:top]
+    if not candidates:
+        return 0
+
+    worker_count = max(1, min(workers or config.SPEEDTEST_WORKERS, len(candidates)))
+    completed = 0
+    lock = threading.Lock()
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        futures = {
+            executor.submit(measure_node_speed, item.node, upload): item for item in candidates
+        }
+        for future in as_completed(futures):
+            item = futures[future]
+            try:
+                item.speed = future.result()
+            except Exception as exc:  # noqa: BLE001
+                item.speed = SpeedResult(error=f"测速异常: {exc}")
+            with lock:
+                completed += 1
+                if callback:
+                    callback(completed, len(candidates), item)
+    logger.info("测速完成：%d 个节点，并发 %d", len(candidates), worker_count)
+    return len(candidates)

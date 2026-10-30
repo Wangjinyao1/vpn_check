@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +27,7 @@ IS_WINDOWS = sys.platform.startswith("win")
 TEMP_DIR = Path(os.environ.get("VPN_CHECK_TEMP_DIR", BASE_DIR / ".temp"))
 LOG_FILE = BASE_DIR / "run_log.log"
 REPORT_FILE = BASE_DIR / "test_results.txt"
+JSON_FILE = BASE_DIR / "report.json"
 EXPORT_DIR = BASE_DIR / "export"
 
 
@@ -118,7 +120,7 @@ SUBSCRIPTION_PROXIES: Tuple[str, ...] = tuple(
 FILTER_KEYWORDS: Tuple[str, ...] = (
     "剩余流量", "套餐到期", "距离下次重置", "过期时间", "过期流量",
     "重置日期", "重置剩余", "流量重置", "官网", "屏蔽广告", "通知",
-    "公告", "群", "客服", "续费", "订阅", "购买", "地址发布",
+    "公告", "群", "客服", "续费", "订阅", "购买", "地址发布", "网址发布",
 )
 
 # ---------------------------------------------------------------------------
@@ -223,6 +225,47 @@ EGRESS_FALLBACK_URL = "http://ip-api.com/json/?fields=query,countryCode"
 EGRESS_TIMEOUT = env_float("EGRESS_TIMEOUT", 6.0)
 
 # ---------------------------------------------------------------------------
+# 需求六：节点测速（指标对齐 Speedtest CLI）
+# ---------------------------------------------------------------------------
+# 测速引擎：builtin（内置采样，默认，全量节点都测）/ ookla（官方 CLI，耗流量大）/ auto
+SPEEDTEST_PROVIDER = env_get("SPEEDTEST_PROVIDER", "builtin").lower()
+# 官方 CLI 路径，留空则自动查找 bin/speedtest[.exe] 与 PATH
+SPEEDTEST_BIN = env_get("SPEEDTEST_BIN", "")
+# Speedtest CLI 单节点整轮超时（秒）：官方测试含选服 + 下载 + 上传
+SPEEDTEST_OOKLA_TIMEOUT = env_float("SPEEDTEST_OOKLA_TIMEOUT", 60.0)
+# 内置实现的 ping 采样次数（用于计算抖动的样本量）
+SPEEDTEST_PINGS = env_int("SPEEDTEST_PINGS", 3)
+# 下载地址模板，需含 {bytes} 占位符；多个地址逗号分隔，按顺序回退
+SPEEDTEST_URLS: Tuple[str, ...] = tuple(
+    item.strip()
+    for item in env_get(
+        "SPEEDTEST_URL",
+        "https://speed.cloudflare.com/__down?bytes={bytes},https://proof.ovh.net/files/10Mb.dat",
+    ).split(",")
+    if item.strip()
+)
+SPEEDTEST_ENABLED = env_bool("SPEEDTEST_ENABLED", True)
+# 测速并发度：全量测速在本机同一出口上进行，并发越高越容易互相抢带宽
+# 1 = 数据最可比（用于最终定榜），2 = 速度与可信度的折中
+SPEEDTEST_WORKERS = env_int("SPEEDTEST_WORKERS", 2)
+# 只测延迟/可用性、不测带宽的节点数上限（0 = 全部代理通节点都测）
+SPEEDTEST_TOP = env_int("SPEEDTEST_TOP", 0)
+# 低于该速率视为采样异常（节点抖动或镜像被限速），自动重测一次并取较好值
+SPEEDTEST_RETRY_FLOOR = env_float("SPEEDTEST_RETRY_FLOOR", 0.1)
+SPEEDTEST_DOWNLOAD_BYTES = env_int("SPEEDTEST_DOWNLOAD_BYTES", 10 * 1024 * 1024)
+SPEEDTEST_DOWNLOAD_TIMEOUT = env_float("SPEEDTEST_DOWNLOAD_TIMEOUT", 10.0)
+SPEEDTEST_UPLOAD_ENABLED = env_bool("SPEEDTEST_UPLOAD_ENABLED", False)
+SPEEDTEST_UPLOAD_URL = env_get("SPEEDTEST_UPLOAD_URL", "https://speed.cloudflare.com/__up")
+SPEEDTEST_UPLOAD_BYTES = env_int("SPEEDTEST_UPLOAD_BYTES", 2 * 1024 * 1024)
+SPEEDTEST_UPLOAD_TIMEOUT = env_float("SPEEDTEST_UPLOAD_TIMEOUT", 10.0)
+# 传输窗口下限（秒）：避免小样本把瞬时速率放大成异常高值
+SPEEDTEST_WINDOW_FLOOR = env_float("SPEEDTEST_WINDOW_FLOOR", 0.05)
+
+# Hysteria2 证书指纹：机场下发的 pcs/pin_sha256 是「证书哈希」，sing-box 只支持
+# 「公钥哈希」。无法换算时退化为跳过证书校验（仅用于连通性评估），置 0 可关闭该退化。
+HYSTERIA2_PIN_INSECURE = env_bool("HYSTERIA2_PIN_INSECURE", True)
+
+# ---------------------------------------------------------------------------
 # 内核路径与生命周期
 # ---------------------------------------------------------------------------
 def _find_bin(name: str) -> str:
@@ -288,7 +331,25 @@ def validate() -> List[ConfigIssue]:
         issues.append(ConfigIssue("PROBE_METHOD", "仅支持 HEAD 或 GET，将回退为 HEAD", False))
     if not Path(XRAY_PATH).exists() and not Path(SINGBOX_PATH).exists():
         issues.append(ConfigIssue("XRAY_BIN/SINGBOX_BIN", "未找到 xray 或 sing-box 内核二进制", True))
+    if SPEEDTEST_ENABLED and not any("{bytes}" in url for url in SPEEDTEST_URLS):
+        issues.append(
+            ConfigIssue("SPEEDTEST_URL", "测速地址缺少 {bytes} 占位符，将按服务端默认大小采样", False)
+        )
+    if SPEEDTEST_PROVIDER == "ookla" and not speedtest_binary_available():
+        issues.append(
+            ConfigIssue("SPEEDTEST_PROVIDER", "指定 ookla 但未找到 speedtest CLI，将回退内置测速", False)
+        )
     return issues
+
+
+def speedtest_binary_available() -> bool:
+    """检测官方 Speedtest CLI 是否可用（显式路径 > bin/ > PATH）"""
+    if SPEEDTEST_BIN:
+        return Path(SPEEDTEST_BIN).exists()
+    for name in ("speedtest.exe", "speedtest"):
+        if (BASE_DIR / "bin" / name).exists():
+            return True
+    return shutil.which("speedtest") is not None
 
 
 def ensure_directories() -> None:

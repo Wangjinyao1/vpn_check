@@ -15,6 +15,7 @@ run_log.log
 
 # ============ 测试产物与报告（可能含节点与 IP） ============
 test_results.txt
+report.json
 smoke_out.txt
 full_run_out.txt
 val_*.txt
@@ -43,6 +44,7 @@ htmlcov/
 # ============ IDE / 系统 ============
 .idea/
 .vscode/
+.workbuddy/
 *.swp
 *.swo
 .DS_Store

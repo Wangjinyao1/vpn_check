@@ -3,12 +3,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Debian%2013%20%7C%20Windows-lightgrey.svg)](./install_debian.sh)
-[![Version](https://img.shields.io/badge/Version-9.02-brightgreen.svg)](#changelog)
+[![Version](https://img.shields.io/badge/Version-9.10-brightgreen.svg)](#changelog)
 [![GitHub stars](https://img.shields.io/github/stars/Wangjinyao1/vpn_check?style=social)](https://github.com/Wangjinyao1/vpn_check)
 
 > 面向中国大陆网络环境的机场节点质量评估工具：用真实代理内核逐节点建隧道，按 OpenWrt-Passwall 规则分级，验证 Google / Gemini / Grok 可达性与 Gemini 真实提问能力，并导出可直接落地的 Passwall 配置。
 
-**关键词**：`机场测速` `节点可用性` `Passwall` `Xray` `Sing-box` `Reality` `Hysteria2` `AnyTLS` `Gemini 地区封锁`
+**关键词**：`机场测速` `节点可用性` `Speedtest CLI` `Passwall` `Xray` `Sing-box` `Reality` `Hysteria2` `AnyTLS` `Gemini 地区封锁`
 
 ---
 
@@ -44,7 +44,8 @@
 2. Google / Gemini / Grok 三个关键站点是否可访问
 3. Gemini 是否被地区封锁（“**Gemini 目前不支持你所在的地区。敬请期待！**”）
 4. 配置登录凭据时，Gemini 能否**真实提问并收到回答**
-5. 最终生成可粘贴到 OpenWrt Passwall 的节点列表、Base64 订阅与 UCI 一键导入脚本
+5. 节点的真实带宽：ping / 抖动 / 下载 / 上传（指标对齐 [Speedtest CLI](https://www.speedtest.net/zh-Hans/apps/cli)）
+6. 最终生成可粘贴到 OpenWrt Passwall 的节点列表、Base64 订阅与 UCI 一键导入脚本
 
 **适用场景**
 
@@ -70,7 +71,15 @@
   - 免登录：解析 Google 前端特性开关 `45631641` 与 GeoIP 三位地区码（对齐 `xykt/RegionRestrictionCheck`）。
   - 登录提问：配置 `GEMINI_1PSID` 后调用 `StreamGenerate` 发起真实问答，验证模型是否可用（对齐 `MatinSenPai/Gemini-Config-Checker`）。
 - **出海落地识别**：Cloudflare trace 获取落地 IP，归属地走进程内缓存，未命中时 ipinfo 回源。
-- **全协议解析**：VLESS（Reality/Vision）、VMess、Trojan、Shadowsocks（SIP002/2022/插件）、Hysteria2（端口跳跃/混淆）、AnyTLS。
+- **节点测速**：每个代理通节点测量 ping / 抖动 / 下载 / 上传，输出测速排行榜。
+  - **独立测速阶段**：测速与探测线程池解耦，默认并发 2（`--speed-workers`），避免多节点争抢同一出口带宽导致数字不可比；需要最终定榜时用 `--speed-workers 1`。
+  - 官方引擎：调用 Ookla Speedtest CLI，通过 `HTTPS_PROXY=socks5://127.0.0.1:<节点端口>` 让 CLI 走当前节点隧道，解析 `speedtest -f json` 结果。
+  - 内置引擎（默认）：无官方 CLI 时纯 Python 经 SOCKS5 定量采样（默认 10 MB 上限），节省流量。
+- **结构化输出**：`--json` 输出 `report.json`，含每探针、每站点、Gemini 三态、测速与失败码，字段与 `core/models.py` 一一对应，可直接 `jq` 查询。
+- **订阅格式全兼容**：URI 列表 / Base64 / **Clash·Mihomo YAML** 三种格式均可解析。
+  - 遇到 Clash YAML 时先带 `flag=passwall` 重试拿 URI 列表，失败则直接解析 `proxies:` 段。
+  - Clash 来源的节点会自动反向生成分享链接，因此同样可以导出 Passwall 链接与 UCI。
+- **全协议解析**：VLESS（Reality/Vision）、VMess、Trojan、Shadowsocks（SIP002/2022/插件）、Hysteria2（端口跳跃/混淆/证书指纹）、AnyTLS。
 - **订阅配额识别**：解析 `Subscription-Userinfo`，展示节余流量与到期时间。
 - **Passwall 原生导出**：节点链接、Base64 订阅、Gemini 可访问清单、Gemini 提问成功清单、UCI 导入脚本。
 - **零数据库**：不依赖 MySQL / Redis / SQLite，结果只落本地报告与 Passwall 导出，部署即用。
@@ -100,7 +109,7 @@
               成功 ──► 🟢 代理通                                    成功 ──► 🟡 仅直连
                      │                                              失败 ──► 🔴 无网络
                      ▼
-        三网页探测 + 落地 IP/归属地 + Gemini 地区判定 + 可选提问验证
+        三网页探测 + 落地 IP/归属地 + 节点测速 + Gemini 地区判定 + 可选提问验证
                      │
                      ▼
         终端看板 + 报告归档 + Passwall 导出
@@ -128,6 +137,20 @@
 | 国内 | Baidu | `https://www.baidu.com` |
 
 默认 `HEAD` 请求、`PROBE_TIMEOUT=6s`，仅 `200/204` 视为通过；可用 `PROBE_METHOD=GET` 切换方法。
+
+### 节点测速（对齐 Speedtest CLI）
+
+测速在代理通节点上执行，指标与 [Speedtest CLI](https://www.speedtest.net/zh-Hans/apps/cli) 对齐：
+
+| 指标 | 官方引擎（Ookla CLI） | 内置引擎 |
+| --- | --- | --- |
+| Ping / Jitter | 取 CLI 结果中的 `ping.latency` / `ping.jitter` | 经隧道多次 TCP 握手，平均延迟与相邻样本平均绝对差 |
+| Download / Upload | `download.bandwidth` / `upload.bandwidth`（bytes/s → Mbps） | 定量采样；窗口取「首字节 → 采样结束」，上传默认关闭 |
+| 选服 | Ookla 自动就近选服 | 直接请求测速镜像（Cloudflare → OVH 回退） |
+
+两种引擎的实际选择由 `SPEEDTEST_PROVIDER` 控制（`auto` / `ookla` / `builtin`）。官方 CLI 没有 `--proxy` 参数，但其 HTTP 客户端遵循 `HTTP_PROXY` / `HTTPS_PROXY`，因此测速时会把这两个变量指向当前节点的本地 SOCKS5 端口（已实测可用）。
+
+> 官方引擎是完整的 Speedtest 流程（约 15s 下载 + 15s 上传），单节点可能消耗数百 MB 流量；批量扫描建议用 `builtin` 或 `--skip-speed`。
 
 ### Gemini 判定顺序
 
@@ -175,11 +198,13 @@ vpn_check/
 ├── requirements.txt           # PySocks / curl_cffi
 ├── core/
 │   ├── config.py              # 统一配置中心（.env 解析、探针规则、路径、超时）
-│   ├── models.py              # 领域模型（ProxyNode / SiteProbe / GeminiVerdict / NodeResult）
-│   ├── parsers.py             # 分享链接解析与连接指纹去重
-│   ├── subscription.py        # 订阅拉取、配额解析、跨订阅汇总
+│   ├── models.py              # 领域模型（ProxyNode / SiteProbe / GeminiVerdict / SpeedResult / NodeResult）
+│   ├── parsers.py             # 分享链接解析、反向生成分享链接与连接指纹去重
+│   ├── clash.py               # Clash / Mihomo YAML 订阅解析（proxies → ProxyNode）
+│   ├── subscription.py        # 订阅拉取（含本地代理探活）、配额解析、跨订阅汇总
 │   ├── engine.py              # Xray / Sing-box 配置生成与隧道生命周期
 │   ├── netprobe.py            # SOCKS5 HTTP 探针、落地 IP 探测
+│   ├── speedtest.py           # 节点测速（Ookla Speedtest CLI / 内置采样）
 │   ├── checker.py             # 探测管道、三级分级、并发调度
 │   ├── gemini.py              # Gemini 地区封锁与提问验证
 │   ├── ip_location.py         # IP 归属地（进程缓存 + ipinfo 回源）
@@ -202,11 +227,12 @@ vpn_check/
 | 阶段 | 模块 | 职责 |
 | --- | --- | --- |
 | 1. 拉取 | `core/subscription.py` | 并发拉取订阅、解析配额、跨订阅汇总 |
-| 2. 解析 | `core/parsers.py` + `core/models.py` | 分享链接 → `ProxyNode`，按连接指纹去重 |
+| 2. 解析 | `core/parsers.py` + `core/clash.py` | 分享链接 / Clash YAML → `ProxyNode`，按连接指纹去重 |
 | 3. 建隧道 | `core/engine.py` | 生成 Xray / Sing-box 配置，启停 SOCKS5 隧道 |
 | 4. 探测 | `core/netprobe.py` + `core/checker.py` | 国际 / 国内探针、网页探测、并发调度 |
-| 5. 判定 | `core/gemini.py` + `core/ip_location.py` | Gemini 三态判定、落地 IP 与归属地 |
-| 6. 输出 | `core/report.py` / `core/exporter.py` | 终端看板、报告归档、Passwall 导出 |
+| 5. 测速 | `core/speedtest.py` + `core/checker.py` | **独立阶段**重建隧道，对代理通节点 ping / 抖动 / 下载 / 上传测速 |
+| 6. 判定 | `core/gemini.py` + `core/ip_location.py` | Gemini 三态判定、Cookie 失效识别、落地 IP 与归属地 |
+| 7. 输出 | `core/report.py` / `core/exporter.py` | 终端看板、测速排行榜、`report.json`、Passwall 导出 |
 
 <a id="kernel"></a>
 
@@ -234,7 +260,7 @@ vpn_check/
 | Python | 3.10+ | 使用 `dataclasses` 与 `from __future__ import annotations` |
 | 操作系统 | Debian 13 / Ubuntu 22.04+ / Windows 10+ | Linux 推荐部署在 VPS 或软路由旁路主机 |
 | 代理内核 | `bin/xray` + `bin/sing-box` | Windows 为 `xray.exe` / `sing-box.exe` |
-| Python 依赖 | `PySocks` / `curl_cffi` | `pip install -r requirements.txt` |
+| Python 依赖 | `PySocks` / `curl_cffi` / `PyYAML` | `pip install -r requirements.txt` |
 | 网络 | 可访问 GitHub 与订阅地址 | 订阅直连失败时可配置本地代理 |
 
 ### 2. 获取代码与安装依赖
@@ -333,6 +359,12 @@ python main.py --protocol vless --workers 20 --ok-only
 
 # 静默模式（Cron / systemd 友好）
 python main.py --quiet
+
+# 结构化报告（供 jq / 看板二次分析）
+python main.py --json
+
+# 定榜：只精测前 10 个节点、单并发，数字最可比
+python main.py --speed-top 10 --speed-workers 1 --json
 ```
 
 运行结束后会得到：
@@ -341,6 +373,7 @@ python main.py --quiet
 | --- | --- | --- |
 | 终端看板 | stdout | 总览、可用节点榜、订阅质量、失败原因 |
 | 报告归档 | `test_results.txt` | 与终端看板内容一致，可用 `--report-file` 改写 |
+| 结构化报告 | `report.json` | `--json` 时生成，逐节点含探针、站点、Gemini、测速、失败码 |
 | Passwall 导出 | `export/` | 节点链接、Gemini 可访问 / 提问成功清单、Base64 订阅、UCI 脚本 |
 | 运行日志 | `run_log.log` | 单文件 3MB 封顶，不产生备份文件 |
 
@@ -377,6 +410,12 @@ python main.py [options]
 | `--workers N` | `10` | 并发线程数；实际取值受 `MAX_WORKERS`（默认 32）与节点总数约束 |
 | `--skip-gemini` | 关闭 | 跳过 Gemini 深度检测（仍探测网页可达性） |
 | `--skip-gemini-chat` | 关闭 | Gemini 仅测地区封锁，不发起提问 |
+| `--skip-speed` | 关闭 | 跳过节点测速（不改动其他探测） |
+| `--speed-workers N` | `2` | 测速并发度；`1` 时数字最可比（用于最终定榜） |
+| `--speed-top N` | `0`（全部） | 仅对延迟最低的前 N 个代理通节点测速 |
+| `--speed-provider P` | 取 `.env`（`builtin`） | 测速引擎：`builtin` / `ookla` / `auto` |
+| `--json` | 关闭 | 额外输出结构化报告 `report.json` |
+| `--json-file PATH` | `report.json` | 结构化报告路径 |
 | `--no-export` | 关闭 | 不导出 Passwall 配置 |
 | `--ok-only` | 关闭 | 控制台仅展示总览与可用节点榜 |
 | `--quiet`, `-q` | 关闭 | 静默模式，仅输出最终摘要 |
@@ -416,9 +455,11 @@ sudo GH_PROXY=https://ghproxy.net/ bash /tmp/install_debian.sh
 
 1. 安装 `python3` / `python3-venv` / `git` / `curl` / `unzip` 等系统依赖
 2. 创建 `.venv` 并安装 `requirements.txt`
-3. 下载 Xray-core 与 Sing-box 到 `bin/`
+3. 下载 Xray-core、Sing-box 与 Ookla Speedtest CLI 到 `bin/`
 4. 初始化 `.env`（若不存在）并将权限收紧为 `600`
 5. 安装 `vpn-check.service` 与 `vpn-check.timer`（默认每 2 小时巡检）
+
+> 不需要官方测速 CLI 时用 `sudo SPEEDTEST_CLI=0 bash install_debian.sh`，程序会自动回退内置测速。
 
 ### 方式 A：已克隆仓库（推荐）
 
@@ -592,6 +633,27 @@ schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
 | `SITE_TIMEOUT` | `12` | Google / Gemini / Grok 网页探测超时（秒） |
 | `EGRESS_TIMEOUT` | `6` | 落地 IP 探测超时（秒） |
 
+### 节点测速
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `SPEEDTEST_ENABLED` | `1` | 是否启用节点测速（`--skip-speed` 只影响当次运行） |
+| `SPEEDTEST_PROVIDER` | `builtin` | 引擎：`builtin`（默认，全量内置采样）/ `ookla`（官方 CLI，耗流量大）/ `auto` |
+| `SPEEDTEST_WORKERS` | `2` | 测速并发度；`1` 时数字最可比，但耗时翻倍 |
+| `SPEEDTEST_TOP` | `0` | 仅测延迟最低的前 N 个代理通节点，`0` = 全部 |
+| `SPEEDTEST_RETRY_FLOOR` | `0.1` | 低于该 Mbps 视为采样异常，自动重测一次取较好值 |
+| `SPEEDTEST_BIN` | 自动查找 `bin/speedtest[.exe]` | Ookla Speedtest CLI 路径 |
+| `SPEEDTEST_OOKLA_TIMEOUT` | `60` | 官方 CLI 单节点整轮超时（秒，含选服 + 下载 + 上传） |
+| `SPEEDTEST_DOWNLOAD_BYTES` | `10485760` | 内置引擎单节点下载采样上限（10 MB） |
+| `SPEEDTEST_DOWNLOAD_TIMEOUT` | `10` | 内置引擎下载采样超时（秒） |
+| `SPEEDTEST_UPLOAD_ENABLED` | `0` | 内置引擎是否测上传（官方 CLI 始终包含上传） |
+| `SPEEDTEST_UPLOAD_BYTES` | `2097152` | 内置上传采样大小（2 MB） |
+| `SPEEDTEST_UPLOAD_TIMEOUT` | `10` | 内置上传超时（秒） |
+| `SPEEDTEST_URL` | `https://speed.cloudflare.com/__down?bytes={bytes},https://proof.ovh.net/files/10Mb.dat` | 内置测速地址模板，逗号分隔按顺序回退 |
+| `SPEEDTEST_PINGS` | `3` | 内置 ping 采样次数（用于计算抖动） |
+
+> 官方 CLI 没有 `--proxy` 参数，测速时通过 `HTTP_PROXY` / `HTTPS_PROXY=socks5://127.0.0.1:<节点端口>` 让 CLI 走节点隧道，指标与 Speedtest 网页一致；单节点流量可能达数百 MB。
+
 ### Gemini 深度检测
 
 | 变量 | 默认值 | 说明 |
@@ -613,6 +675,7 @@ schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
 | `KERNEL_START_TIMEOUT` | `8` | 内核启动等待（秒） |
 | `KERNEL_STOP_TIMEOUT` | `3` | 内核退出等待（秒） |
 | `ENABLE_CORE_FALLBACK` | `1` | 首选内核失败时自动切换备用内核 |
+| `HYSTERIA2_PIN_INSECURE` | `1` | 机场下发的 `pcs` 是证书哈希，sing-box 只支持公钥哈希，无法校验时降级为跳过校验（仅连通性评估用），置 `0` 可关闭 |
 | `DEFAULT_WORKERS` | `10` | 默认并发线程数 |
 | `MAX_WORKERS` | `32` | 并发上限（`--workers` 超出时自动收敛） |
 | `VPN_CHECK_TEMP_DIR` | `.temp` | 运行期临时目录（仅读取系统环境变量；文件以 `temp_` 开头） |
@@ -652,7 +715,39 @@ schtasks /Create /TN "vpn_check" /SC DAILY /ST 08:00 /F `
 | `passwall_nodes_all.txt` | 本次全部抓取节点链接 |
 | `passwall_uci_ok.txt` | UCI 批量导入脚本，上传路由器后 `sh passwall_uci_ok.txt` |
 
-UCI 字段已逐项对照上游 [`subscribe.lua`](https://github.com/Openwrt-Passwall/openwrt-passwall/blob/main/luci-app-passwall/root/usr/share/passwall/subscribe.lua)：`type`、`protocol`、`transport`、`password`、`ws_host/ws_path`、`grpc_serviceName`、`httpupgrade_*`、`xhttp_*`、`tls_serverName`、`utls/fingerprint`、`reality_*`、`hysteria2_*` 等。
+UCI 字段**逐项对照上游源码**（`subscribe.lua` + `client/type/*.lua`），不是按记忆拼的。
+
+### 字段对齐规则（源码依据）
+
+| 项目 | 规则 | 依据 |
+| --- | --- | --- |
+| 节点段落 | `/etc/config/passwall` 中 `type=nodes` | `controller/passwall.lua: uci:section(c_config, "nodes", uid)` |
+| `type` 分配 | VLESS/VMess/Trojan → `Xray`；SS 无插件 → `Xray`；SS 带插件 / AnyTLS / Hysteria2 → `sing-box` | `subscribe.lua` `set_ss_implementation` 与各协议分支 |
+| Hysteria2 | 与上游一致走 `type=sing-box` + `protocol=hysteria2`（专用 `Hysteria2` 核心分支不写 `protocol`，且依赖额外二进制） | `subscribe.lua` 1519-1528 行 |
+| `transport` | Xray 用 `raw` / `ws` / `grpc` / `xhttp` / `httpupgrade` / `mkcp` / `quic`；`http(h2)` 映射为 `xhttp` 且 `xhttp_mode=stream-one` | `subscribe.lua` 归一化规则 |
+| SS 加密方式 | **同时写 `method` 与 `ss_method`**：Xray/sing-box 的 CBI 用 `rewrite_option="method"`，SS-Rust 直接读 `ss_method` | `2_xray.lua:334`、`1_sing-box.lua:283`、`3_ss-rust.lua:39` |
+| SIP003 插件 | `plugin_enabled='1'` + `plugin` + `plugin_opts`（`obfs` 改写为 `obfs-local`） | `subscribe.lua` 插件规范化 |
+| `tcp_guise_http_host/path` | 是 **DynamicList**，必须 `uci add_list`，用 `uci set` 会变成字符串导致解析失败 | `2_xray.lua:608` |
+| TLS | 显式写 `tls_allowInsecure='0'/'1'`，避免继承全局默认；`utls='1'` + `fingerprint` | `subscribe.lua` `tls_allowInsecure` 赋值 |
+| Reality | `reality_publicKey` / `reality_shortId`；`reality_spiderX` **仅 Xray**（sing-box CBI 无此选项） | `1_sing-box.lua` 字段表 |
+| Hysteria2 字段 | `hysteria2_auth_password` / `hysteria2_hop` / `hysteria2_obfs_type` 等带前缀（CBI 用 `rewrite_option=o.option`）；`tls_serverName` / `tls_allowInsecure` / `tls_pinSHA256` 不带前缀 | `5_hysteria2.lua:33` 起 |
+| 节点来源标记 | `add_mode='1'`（导入），并按订阅名写 `group` | `controller/passwall.lua` 导入/复制节点时置 1 |
+| 段落变量 | `sec=$(uci add passwall nodes)`，不加 `-q`（部分固件 `-q` 不回显 section 名） | — |
+
+> 补充：Hysteria2 的 `pcs` 在**路由器侧是有效的**——Passwall 的 sing-box 节点有 `tls_pinSHA256` 选项，可正确校验证书指纹。本项目本地测速用的 sing-box 只支持公钥哈希，因此本地会降级，但**导出到 Passwall 时指纹会完整保留**。
+
+### 导出前字段体检
+
+每个代理通节点导出前会做一次静态校验（`exporter.validate_node_fields`），缺失项直接列在终端与运行日志中：
+
+| 检查项 | 示例告警 |
+| --- | --- |
+| 凭据 | `缺少 uuid` / `缺少 password` / `缺少 hysteria2_auth_password` |
+| 加密方式 | `缺少 method`（SS） |
+| 传输参数 | `gRPC 缺少 serviceName`、`WS 缺少 path`、`XHTTP 缺少 path` |
+| TLS / Reality | `TLS 缺少 serverName`、`Reality 缺少 publicKey` |
+
+这样"导入路由器后某个字段是空的"这类问题，在导出时就暴露，而不是上机才发现。
 
 ### 导入 Passwall
 
@@ -679,14 +774,22 @@ ssh root@192.168.1.1 "sh /tmp/passwall_uci_ok.txt"
 python -m unittest discover -s tests -v
 ```
 
-[`tests/test_core.py`](./tests/test_core.py) 的覆盖范围：
+[`tests/test_core.py`](./tests/test_core.py)、[`tests/test_stage_a.py`](./tests/test_stage_a.py) 与 [`tests/test_passwall_alignment.py`](./tests/test_passwall_alignment.py) 的覆盖范围（共 82 项）：
 
 | 覆盖点 | 说明 |
 | --- | --- |
 | 链接解析 | VLESS Reality / VLESS WS / VMess JSON / Hysteria2 / AnyTLS / Shadowsocks（含 SIP003 插件） |
+| Passwall 字段对齐 | `type`/`protocol`/`transport` 分配、SS 双写、`add_list`、`grpc_mode`、`xhttp_mode=stream-one`、`reality_spiderX` 仅 Xray、字段体检 |
+| Clash YAML | `proxies:` → `ProxyNode`：VLESS Reality、VMess WS、SS obfs 插件、Hysteria2、占位节点过滤、非法 YAML 降级 |
+| 链接反向生成 | `build_share_link` 与解析闭环（指纹一致），保证 Clash 来源节点可导出 |
+| 结构化输出 | `report.json` 字段完整性，且不包含 `uuid` / `raw` 等凭据 |
+| Gemini Cookie | 失效状态与 `🍪 Cookie失效` 标签，避免把 Cookie 过期误判成节点不可用 |
+| Hysteria2 指纹 | `pcs` 存在时降级为 `insecure`，且不下发不被支持的 `certificate_public_key_sha256` |
+| 订阅探活 | 代理 URL 解析与未监听端口快速判死（含缓存） |
 | 跨订阅去重 | 连接指纹 SHA256 去重 |
 | 内核配置 | Xray / Sing-box JSON 结构与字段映射 |
 | Passwall 导出 | UCI 字段映射、单引号转义、Gemini 可访问 / 提问成功清单筛选 |
+| 节点测速 | Mbps 换算、展示格式、Ookla JSON 解析、测速排行榜与摘要渲染 |
 | Gemini 判据 | 特性开关、地区码、封锁文案、回复解析 |
 | 订阅配额 | `Subscription-Userinfo` 解析 |
 | 内核自检 | `xray run -test` / `sing-box check`（二进制存在时执行） |
@@ -750,10 +853,12 @@ git check-ignore -v .env Project_Require.md export/passwall_uci_ok.txt run_log.l
 
 ## 📈 版本迭代
 
-> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `9.02`。
+> 版本规则：小改 +0.01，中改 +0.1，大改 +1。项目早期版本标记为 `7.00`，模块化重构后升至 `8.00`，当前版本 `9.03`。
 
 | 版本 | 日期 | 类型 | 变更摘要 |
 | --- | --- | --- | --- |
+| 9.10 | 2026-10-30 | 中改 (+0.1) | 阶段 A：新增 `core/clash.py` 解析 Clash/Mihomo YAML 订阅（先试 `flag=passwall`，失败回退 YAML），修复部分机场整源丢节点；`core/parsers.py` 新增 `build_share_link` 反向生成链接，使 YAML 来源节点也能导出 Passwall；**导出器按 Passwall 上游源码重写**（`type`/`protocol` 分配、SS 双写 `method`/`ss_method`、DynamicList 改用 `add_list`、`add_mode`/`group`、Hysteria2 走 sing-box、`reality_spiderX` 仅 Xray），并新增导出前字段体检；测速改为**独立阶段**（隧道重建 + 可配并发 + 低速重测），并发抢带宽问题修复；新增 `--json` 结构化报告；Gemini Cookie 失效独立识别（`cookie_invalid`，不再误杀节点）；订阅拉取前先做本地代理 TCP 探活，消除无效等待与日志噪音；Hysteria2 证书指纹改为降级策略并补充 UDP 失败提示；占位节点词表补充「网址发布」；新增 PyYAML 依赖 |
+| 9.03 | 2026-10-30 | 中改 (+0.1) | 新增节点测速：`core/speedtest.py` 支持 Ookla Speedtest CLI（经 `HTTPS_PROXY` 走节点隧道，解析 `-f json`）与内置 SOCKS5 采样双引擎，输出 ping / 抖动 / 下载 / 上传及测速排行榜；新增 `--skip-speed`、`SPEEDTEST_*` 配置；一键安装脚本自动下载官方 CLI |
 | 9.02 | 2026-10-29 | 小改 (+0.01) | 内核下载改为多镜像自动回退（`GH_PROXY` → gh-proxy.com → ghfast.top → ghproxy.net → 直连），强制 HTTP/1.1 并加入重试 / 低速中断，修复镜像 502 与 HTTP/2 断流导致「未获得任何代理内核」 |
 | 9.01 | 2026-10-29 | 小改 (+0.01) | 修复镜像不支持 git 协议时的安装失败：`git clone` 失败自动回退源码压缩包（curl + tar），并自动清理不完整克隆目录；README 补充对应排错说明 |
 | 9.00 | 2026-10-29 | 大版本 (+1) | 精简定位：移除 MySQL 持久化层、`--no-db`、PyMySQL 依赖与全部数据表；IP 归属地简化为进程缓存 + ipinfo；新增「Gemini 提问成功」节点导出；专注 Google / Gemini / Grok 三站点与 Passwall 导出 |
@@ -769,6 +874,12 @@ git check-ignore -v .env Project_Require.md export/passwall_uci_ok.txt run_log.l
 
 ## ❓ 常见问题
 
+**Q：测速为什么比 Speedtest 网页偏低/偏高？**
+A：测速发生在节点隧道内，结果受本机带宽、并发数、测速服务器远近共同影响。多个节点并发测速会共享同一条出口带宽，需要横向对比时请降低 `--workers`（如 `--workers 1`）。安装 `bin/speedtest` 后会自动使用官方 Ookla CLI，指标与 Speedtest 网页一致；否则使用内置 10 MB 采样，结果偏保守且更省流量。
+
+**Q：官方 Speedtest CLI 为什么不用 `--proxy` 参数？**
+A：Ookla CLI 1.2.0 没有 `--proxy`，但其 HTTP 客户端遵循 `HTTP_PROXY` / `HTTPS_PROXY`。本项目在子进程环境中把这两个变量指向当前节点的 `socks5://127.0.0.1:<端口>`，已实测可让官方 CLI 走节点隧道。
+
 **Q：Gemini 显示“可用”，但浏览器打开仍提示地区不支持？**
 A：免登录判定基于页面特性开关与 Google GeoIP 地区码，可能受登录态、账号地区或 A/B 实验影响。配置 `GEMINI_1PSID` 后可启用真实提问验证，以提问结果为准。
 
@@ -776,7 +887,17 @@ A：免登录判定基于页面特性开关与 Google GeoIP 地区码，可能�
 A：Google / Grok 列表示“链路可达”。Grok 前置 Cloudflare 风控，对非浏览器请求常返回 403/429；能收到 HTTP 响应即证明代理链路正常。
 
 **Q：为什么某些 Hysteria2 节点显示 🔴？**
-A：Hysteria2 基于 QUIC/UDP。若本地网络封锁 UDP 或节点服务端离线，内核能启动但无法连通目标，会归类为 `PROXY_CONNECT_FAIL` 或 `TIMEOUT`。
+A：Hysteria2 基于 QUIC/UDP。若本地网络封锁 UDP 或节点服务端离线，内核能启动但无法连通目标，会归类为 `PROXY_CONNECT_FAIL` 或 `TIMEOUT`，报告里会追加 UDP 提示。
+另外，部分机场用 `pcs` / `pin_sha256` 下发**证书哈希**做指纹校验，而 sing-box 只支持**公钥哈希**（`certificate_public_key_sha256`），两者无法换算。直接下发会报 `unrecognized remote public key`，因此程序改为跳过证书校验（`HYSTERIA2_PIN_INSECURE=1`）。若某机场的 Hy2 节点在跳过校验后仍超时，说明节点本身不可达，与配置无关。
+
+**Q：某个机场显示「获取失败」或「0 节点」？**
+A：先看失败原因分三类：
+1. `handshake timed out` / `Connection timed out` —— 机场域名在当前网络不可达，或短时间请求过多被限速，稍后重试即可；
+2. `订阅返回 Clash YAML` 且解析为 0 —— 该 YAML 里的协议不在支持范围（如 `ssr`、`tuic`），可反馈补充；
+3. `订阅返回 HTML 页面` —— 令牌失效或被劫持，需重新获取订阅链接。
+
+**Q：测速结果和以前差别很大？**
+A：9.10 起测速从探测线程池里拆出来了。以前 10 个节点同时测速会争抢同一条出口带宽，数字被互相压低；现在默认 `--speed-workers 2`，需要做最终决策时用 `--speed-workers 1`，同一节点两次测量偏差通常在 15% 以内。
 
 **Q：订阅提示“返回 HTML 页面”？**
 A：通常是订阅令牌失效、被运营商劫持，或该订阅需要先通过代理拉取。可在 `.env` 配置 `SUBSCRIPTION_PROXY` 指向本地代理。
